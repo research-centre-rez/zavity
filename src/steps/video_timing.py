@@ -16,7 +16,7 @@ def extract_and_dump(video_file_path):
             "-print_format", "flat"]
     video_info_file_path = _dump_path(video_file_path)
     with open(video_info_file_path, 'w') as f:
-        p1 = subprocess.call(_cmd, stdout=f)
+        p1 = subprocess.run(_cmd, stdout=f)
 
 
 def load_or_extract(video_file_path: str):
