@@ -2,7 +2,7 @@ import cv2
 import numpy as np
 from tqdm.auto import tqdm
 
-from src.config import BLENDED_PIXELS_PER_FRAME, SHIFT_PER_FRAME, FRAMES_PER_360_DEG, FRAME_SIZE
+from src.config import BLENDED_PIXELS_PER_FRAME, SHIFT_PER_FRAME, FRAMES_PER_360_DEG, FRAME_SIZE, BLENDED_PIXELS_SHIFT
 
 
 def construct_row(vidcap,
@@ -11,8 +11,9 @@ def construct_row(vidcap,
                   direction: str = "CCW",
                   shift_per_frame=SHIFT_PER_FRAME,
                   blended_pixels_per_frame=BLENDED_PIXELS_PER_FRAME,
+                  blended_pixels_shift=BLENDED_PIXELS_SHIFT,
                   frames_per_360_deg=FRAMES_PER_360_DEG,
-                  rotation: bool =False):
+                  rotation: bool = False):
     if not vidcap or end - start <= 0:
         raise IOError("Unsupported input data.")
 
@@ -55,7 +56,7 @@ def construct_row(vidcap,
                         else np.round(shift_per_frame * frameNo).astype(int))
         crop_x_end = np.max([0, crop_x_start + blended_pixels_per_frame])
         # try:
-        row_image[:, crop_x_start:crop_x_end] += aligned_image[:, image_part // 2 - blended_pixels_per_frame // 2: image_part // 2 + blended_pixels_per_frame // 2, 0]
+        row_image[:, crop_x_start:crop_x_end] += aligned_image[:, (image_part // 2 - blended_pixels_per_frame // 2) + blended_pixels_shift : (image_part // 2 + blended_pixels_per_frame // 2) + blended_pixels_shift, 0]
         # except:
         #     print(crop_x_start, crop_x_end, image.shape, aligned_image.shape)
         weight_matrix[:, crop_x_start:crop_x_end] += 1

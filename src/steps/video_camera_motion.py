@@ -1,4 +1,5 @@
 import os.path
+import pickle
 
 import cv2
 import numpy as np
@@ -54,9 +55,10 @@ class VideoMotion:
                 self._dump_path("speeds")) and os.path.isfile(self._dump_path("frames_per_360")):
             self.intervals = np.load(self._dump_path("intervals"))
             print(f"Intervals: {self.intervals} Loaded")
-            self.speeds = np.load(self._dump_path("speeds"))
+            with open(self._dump_path("speeds"), 'rb') as fp:
+                self.speeds = pickle.load(fp)
             print(
-                f"Horizontal speed: {self.speeds['horizontal']}, Vertical speed: {self.speeds['vertical']}, Clockwise: {self.getDirection()}, Portrait: {self.isPortrait()} Loaded")
+                f"Horizontal speed: {self.speeds['horizontal']}, Vertical shift: {self.speeds['vertical_shift']}, Clockwise: {self.getDirection()}, Portrait: {self.isPortrait()} Calculated")
             self.frames_per_360 = np.load(self._dump_path("frames_per_360"))
             print(f"Frames per 360: {self.frames_per_360} Loaded")
         else:
@@ -67,7 +69,8 @@ class VideoMotion:
         self.computeSpeeds()
         self.computeFramesPer360()
         self.dump("intervals", self.intervals)
-        self.dump("speeds", self.speeds)
+        with open(self._dump_path("speeds"), 'wb') as fp:
+            pickle.dump(self.speeds, fp)
         self.dump("frames_per_360", self.frames_per_360)
 
     @staticmethod
@@ -257,6 +260,9 @@ class VideoMotion:
 
     def getAverageVerticalShift(self):
         return abs(self.speeds['vertical_shift'])
+
+    def isMovingDown(self):
+        return self.speeds['vertical_shift'] < 0
 
     def getDirection(self):
         return "CCW" if (self.speeds['horizontal'] > 0 and not self.isPortrait()) or (
