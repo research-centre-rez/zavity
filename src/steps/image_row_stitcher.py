@@ -103,9 +103,9 @@ class ImageRowStitcher:
         return self.extract_images_and_compute_mi(shift=x, imgA=self.imgA, imgB=self.imgB,
                                                   seed_position=self.seed_position,
                                                   width=self.imgA.shape[1] - 2 * abs(self.physics["roll"]) -
-                                                        self.search_space_size[0],
+                                                        2 * self.search_space_size[0],
                                                   height=self.imgA.shape[0] - self.physics["scan_shift"] -
-                                                         self.search_space_size[1])
+                                                         2 * self.search_space_size[1])
 
     @staticmethod
     def show_images(imgA, imgB, seed_position, shift, width):
@@ -160,7 +160,9 @@ class ImageRowStitcher:
             self.seed_position = np.array([first_frame, [first_frame[0] - scan_shift, first_frame[1] + roll]]).astype(
                 int)
             shift_seeds.append(self.seed_position)
-            result = minimize(self.to_minimize, x0=np.array([0, 0]), method='Powell', bounds=[(-self.search_space_size[1], +self.search_space_size[1]), (-self.search_space_size[0], self.search_space_size[0])],
+            result = minimize(self.to_minimize, x0=np.array([0, 0]), method='Powell',
+                              bounds=[(-self.search_space_size[1], +self.search_space_size[1]),
+                                      (-self.search_space_size[0], self.search_space_size[0])],
                               options={'xtol': 1e-2, 'ftol': 1e-2})
             shift_fixes.append(result.x)
 
