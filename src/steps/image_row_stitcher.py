@@ -38,8 +38,8 @@ class ImageRowStitcher:
     def process(self):
         self.load_or_compute()
 
-    def _dump_path(self):
-        return f"{self.video_file_path.removesuffix('.MP4')}-oio.png"
+    def _dump_path(self, name='oio.png'):
+        return f"{self.video_file_path.removesuffix('.MP4')}-{name}"
 
     def load_or_compute(self):
         if os.path.isfile(self._dump_path()):
@@ -49,7 +49,11 @@ class ImageRowStitcher:
 
     def compute(self):
         self.loadImageRows()
-        self.computePositions()
+        if os.path.isfile(self._dump_path('positions.npy')):
+            self.per_row_shift = np.load(self._dump_path('positions.npy'))
+        else:
+            self.computePositions()
+        np.save(self._dump_path('positions.npy'), self.per_row_shift)
         self.rollImageRows()
         self.stitchImageRows()
         self.dump()
@@ -176,9 +180,9 @@ class ImageRowStitcher:
             double_image
         )
         if shift > 0:
-            y = np.arange(shift, shift + array.shape[1] - 0.5, 1)
+            y = np.arange(shift, shift + array.shape[1] - 0.5)
         else:
-            y = np.arange(shift + array.shape[1], 2 * array.shape[1] + shift - 0.5, 1)
+            y = np.arange(shift + array.shape[1], 2 * array.shape[1] + shift - 0.5)
         x = np.arange(array.shape[0])
         xg, yg = np.meshgrid(x, y)
         return interp((xg, yg)).T
@@ -214,17 +218,17 @@ class ImageRowStitcher:
         blend_matrix = np.zeros((out_height, to_grid[0].shape[1], len(to_grid)))
 
         blend_matrix[:real_shift[1], :, 0] += 1
-        lin_blend = np.dot(np.arange(0, 1, 1 / (to_grid[0].shape[0] - real_shift[1])).reshape(-1, 1),
+        lin_blend = np.dot(np.linspace(0, 1, (to_grid[0].shape[0] - real_shift[1]), endpoint=False).reshape(-1, 1),
                            np.ones((to_grid[0].shape[1], 1)).T)
         blend_matrix[real_shift[1]: to_grid[0].shape[0], :, 0] += np.flipud(lin_blend)
         blend_matrix[real_shift[1]: to_grid[0].shape[0], :, 1] += lin_blend
 
-        for en, (image, r_shift) in enumerate(list(zip(to_grid, real_shift))[:-2]):
+        for en, (image, r_shift) in tqdm(enumerate(list(zip(to_grid, real_shift))[:-2]), total=len(list(zip(to_grid, real_shift))[:-2]), desc="Blending image"):
+            # print(en, real_shift[en + 2], to_grid[en + 1].shape[0], real_shift[en + 1],(to_grid[en + 1].shape[0] +
+            # real_shift[en + 1] - real_shift[en + 2]), np.linspace(0, 1, 1 / (to_grid[en + 1].shape[0] + real_shift[
+            # en + 1] - real_shift[en + 2])).shape, np.ones((to_grid[en + 1].shape[1], 1)).T.shape)
             blend_matrix[real_shift[en] + to_grid[en].shape[0]: real_shift[en + 2], :, en + 1] += 1
-            lin_blend = np.dot(
-                np.arange(0, 1, 1 / (to_grid[en + 1].shape[0] + real_shift[en + 1] - real_shift[en + 2])).reshape(-1,
-                                                                                                                  1),
-                np.ones((to_grid[en + 1].shape[1], 1)).T)
+            lin_blend = np.dot(np.linspace(0, 1, (to_grid[en + 1].shape[0] + real_shift[en + 1] - real_shift[en + 2]), endpoint=False).reshape(-1, 1), np.ones((to_grid[en + 1].shape[1], 1)).T)
             blend_matrix[real_shift[en + 2]: to_grid[en + 1].shape[0] + real_shift[en + 1], :, en + 1] += np.flipud(
                 lin_blend)
             blend_matrix[real_shift[en + 2]: to_grid[en + 1].shape[0] + real_shift[en + 1], :, en + 2] += lin_blend
