@@ -38,6 +38,8 @@ class ImageRowStitcher:
     def process(self):
         if os.path.isfile(self.output_oio_path):
             pass
+        if len(self.imageRows) == 1:
+            iio.imwrite(self.output_oio_path, self.imageRows[0])
         else:
             self.load_or_compute()
 

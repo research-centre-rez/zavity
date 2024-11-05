@@ -192,6 +192,10 @@ class VideoPreprocessor:
                            merge_threshold=THRESHOLD_DISTANCE_FOR_BREAKPOINT_MERGE, secondary=True,
                            segment_type_return=False):
 
+        if self.video_capture.get(cv2.CAP_PROP_FRAME_COUNT) < 1000:
+            step = 1
+            merge_threshold = 5
+
         if angles is None:
             angles = self.angles
 
@@ -360,13 +364,18 @@ class VideoPreprocessor:
         return -a
 
     def preprocessVideo(self):
-        i_row = 1
-        start, end = self.borderBreakpoints[i_row]
+        if len(self.borderBreakpoints) >= 2:
+            i_row = 1
+            start, end = self.borderBreakpoints[i_row]
+            _, video_start = self.borderBreakpoints[0]
+            video_end, _ = self.borderBreakpoints[-1]
+        else:
+            start = 0
+            end = 999999
+            _, video_start = self.borderBreakpoints[0]
+            video_end, _ = self.video_capture.get(cv2.CAP_PROP_FRAME_COUNT)
 
-        _, video_start = self.borderBreakpoints[0]
-        video_end, _ = self.borderBreakpoints[-1]
-
-        if self.angles[self.breakpoints[2] // EVERY_NTH_FRAME] < self.angles[self.breakpoints[3] // EVERY_NTH_FRAME]:
+        if self.angles[self.breakpoints[2] // EVERY_NTH_FRAME] < self.angles[self.breakpoints[1] // EVERY_NTH_FRAME]:
             angle_breakpoint = self.refineBreakpoint(self.breakpoints[2])
         else:
             angle_breakpoint = self.refineBreakpoint(self.breakpoints[3])
@@ -392,10 +401,11 @@ class VideoPreprocessor:
 
         for i in tqdm(range(total_frames), desc="PreProcessing frames"):
             success, frame = self.video_capture.read()
-            frame = frame[Y1-PADDING:Y2+PADDING, X1-PADDING:X2+PADDING]
+            frame = frame[Y1 - PADDING:Y2 + PADDING, X1 - PADDING:X2 + PADDING]
             rotate_matrix = cv2.getRotationMatrix2D((frame.shape[1] / 2, frame.shape[0] / 2), angle, 1)
             rotated_image = cv2.warpAffine(
-                src=frame, M=rotate_matrix, dsize=(frame.shape[1], frame.shape[0]))[PADDING:Y2-Y1+PADDING, PADDING:X2-X1+PADDING, 0]
+                src=frame, M=rotate_matrix, dsize=(frame.shape[1], frame.shape[0]))[PADDING:Y2 - Y1 + PADDING,
+                            PADDING:X2 - X1 + PADDING, 0]
 
             out.write(rotated_image.astype(np.uint8))
 
