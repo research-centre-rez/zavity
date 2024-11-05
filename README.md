@@ -10,9 +10,12 @@ Makes overall image output from video scan.
 - `--calc_rot_per_frame`: (Default is False) Set to True to calculate its own rotation per frame, not using the precalculated one. It takes around 2 hours. Also, it compares the precalculated one with calculated one.
 
 ## Docker Usage
+To build the application image:
+```bash
+docker build -t oio-pipeline .
+```
 To run the application using Docker, you need to specify the config file path and input and output directories. Use the `-v` flag to bind your local paths.
 Examples:
-
 ```bash
 docker run -v /path/to/input:/input -v /path/to/output:/output -v /path/to/config/config.py:/app/src/config.py oio-pipeline --mode multiple
 ```
