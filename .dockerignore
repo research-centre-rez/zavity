@@ -1,0 +1,11 @@
+.git
+venv
+__pycache__
+devernay_1.0/
+src/config.py
+*.pyc
+*.pyo
+*.pyd
+*.db
+*.egg-info
+*.egg

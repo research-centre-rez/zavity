@@ -7,38 +7,44 @@ import pandas as pd
 from scipy.stats import stats
 from tqdm.auto import tqdm
 
+from config import FPS_REDUCTION, RESOLUTION_DECS
+
 
 class VideoMotion:
-    video_file_path: str
-    video_capture: cv2.VideoCapture
+    speeds: dict[str, float]
+    stats: dict
     motion_directions: list[int]
     motion_positions: list[tuple[int, float, float]]
+    intervals: np.ndarray
+    video_capture: cv2.VideoCapture
     width: int
     height: int
-    intervals: np.ndarray
-    speeds: dict[str, float]
+    video_file_path: str
+    output_path: str
+    video_name: str
     frames_per_360 = int
     cw = bool
 
-    def __init__(self, video_file_path: str, fps_reduction: int = 1, resolution_decs: int = 6):
+    def __init__(self, video_file_path: str, output_path: str):
         self.speeds = {}
+        self.stats = {}
         self.motion_directions = []
         self.motion_positions = []
         self.intervals = np.empty((0, 2))
         self.video_capture = cv2.VideoCapture(video_file_path)
-        self.fps_reduction = fps_reduction
-        self.resolution_decs = resolution_decs
-        self.width = int(self.video_capture.get(cv2.CAP_PROP_FRAME_WIDTH) / resolution_decs)
-        self.height = int(self.video_capture.get(cv2.CAP_PROP_FRAME_HEIGHT) / resolution_decs)
+        self.width = int(self.video_capture.get(cv2.CAP_PROP_FRAME_WIDTH) / RESOLUTION_DECS)
+        self.height = int(self.video_capture.get(cv2.CAP_PROP_FRAME_HEIGHT) / RESOLUTION_DECS)
         self.video_file_path = video_file_path
+        self.output_path = output_path
+        self.video_name = os.path.basename(video_file_path)
 
     @staticmethod
     def getCorners(gray_frame, **feature_params):
         corners = cv2.goodFeaturesToTrack(gray_frame, **feature_params)
         return corners
 
-    def _dump_path(self, object):
-        return f"{self.video_file_path}-{object}.npy"
+    def _dump_path(self, object_name):
+        return os.path.join(self.output_path, os.path.splitext(self.video_name)[0] + f'-{object_name}.npy')
 
     def dump(self, name: str, object):
         np.save(self._dump_path(name), object)
@@ -52,13 +58,17 @@ class VideoMotion:
             self.dump("motion_directions", self.motion_directions)
             self.dump("motion_positions", self.motion_positions)
         if os.path.isfile(self._dump_path("intervals")) and os.path.isfile(
-                self._dump_path("speeds")) and os.path.isfile(self._dump_path("frames_per_360")):
+                self._dump_path("speeds")) and os.path.isfile(self._dump_path("frames_per_360")) and os.path.isfile(
+            self._dump_path("stats")):
             self.intervals = np.load(self._dump_path("intervals"))
             print(f"Intervals: {self.intervals} Loaded")
             with open(self._dump_path("speeds"), 'rb') as fp:
                 self.speeds = pickle.load(fp)
-            print(
-                f"Horizontal speed: {self.speeds['horizontal']}, Vertical shift: {self.speeds['vertical_shift']}, Clockwise: {self.getDirection()}, Portrait: {self.isPortrait()} Calculated")
+            with open(self._dump_path("stats"), 'rb') as fp:
+                self.stats = pickle.load(fp)
+            print(f"Horizontal speed: {self.speeds['horizontal']}±{self.stats['horizontal_speed_std']}\n"
+                  f"Vertical shift: {self.speeds['vertical_shift']}±{self.stats['vertical_shift_std']}\n"
+                  f"Clockwise: {self.getDirection()}, Portrait: {self.isPortrait()}\nLoaded\n")
             self.frames_per_360 = np.load(self._dump_path("frames_per_360"))
             print(f"Frames per 360: {self.frames_per_360} Loaded")
         else:
@@ -71,6 +81,8 @@ class VideoMotion:
         self.dump("intervals", self.intervals)
         with open(self._dump_path("speeds"), 'wb') as fp:
             pickle.dump(self.speeds, fp)
+        with open(self._dump_path("stats"), 'wb') as fp:
+            pickle.dump(self.stats, fp)
         self.dump("frames_per_360", self.frames_per_360)
 
     @staticmethod
@@ -110,6 +122,7 @@ class VideoMotion:
         self.intervals = np.array(merged_intervals)
 
     def process(self):
+        print(f"Processing VideoMotion for: {self.video_file_path}\n")
         self.load_or_compute()
 
     def computeMotion(self):
@@ -130,7 +143,7 @@ class VideoMotion:
         self.motion_positions.append((int(self.video_capture.get(cv2.CAP_PROP_POS_FRAMES)), 0.0, 0.0))
 
         total_frames = int(self.video_capture.get(cv2.CAP_PROP_FRAME_COUNT))
-        pbar = tqdm(total=total_frames / self.fps_reduction, desc='Processing motion from frames')
+        pbar = tqdm(total=total_frames // FPS_REDUCTION, desc='Processing motion from frames')
 
         # current_frame_n = self.fps_reduction
 
@@ -235,7 +248,8 @@ class VideoMotion:
         for start, end in self.intervals:
             mask_horizontal |= (df['frame_ID'] >= start + 5) & (df['frame_ID'] <= end - 5)
         df_horizontal = df[mask_horizontal]
-        self.speeds["horizontal"] = df_horizontal["x_shift_diff"].mean() * self.resolution_decs
+        self.speeds["horizontal"] = df_horizontal["x_shift_diff"].mean() * RESOLUTION_DECS
+        self.stats["horizontal_speed_std"] = df_horizontal["x_shift_diff"].std() * RESOLUTION_DECS
 
         # mask_vertical = pd.Series(False, index=df.index)
         # for start, end in self.getInvertedIntervals():
@@ -247,10 +261,11 @@ class VideoMotion:
         for start, end in self.getInvertedIntervals():
             vertical_shift = df.loc[end, "y_shift"] - df.loc[start, "y_shift"]
             vertical_shifts.append(vertical_shift)
-        self.speeds["vertical_shift"] = np.mean(vertical_shifts) * self.resolution_decs
+        self.speeds["vertical_shift"] = np.mean(vertical_shifts) * RESOLUTION_DECS
+        self.stats["vertical_shift_std"] = np.std(vertical_shifts) * RESOLUTION_DECS
 
         print(
-            f"Horizontal speed: {self.speeds['horizontal']}, Vertical shift: {self.speeds['vertical_shift']}, Clockwise: {self.getDirection()}, Portrait: {self.isPortrait()} Calculated")
+            f"Horizontal speed: {self.speeds['horizontal']}±{self.stats['horizontal_speed_std']}\nVertical shift: {self.speeds['vertical_shift']}±{self.stats['vertical_shift_std']}\nClockwise: {self.getDirection()}, Portrait: {self.isPortrait()}\nCalculated\n")
 
     def getHorizontalSpeed(self):
         return abs(self.speeds['horizontal'])
@@ -269,10 +284,11 @@ class VideoMotion:
                 self.speeds['horizontal'] < 0 and self.isPortrait()) else "CW"
 
     def isPortrait(self):
-        if self.video_capture.get(cv2.CAP_PROP_FRAME_WIDTH) < self.video_capture.get(cv2.CAP_PROP_FRAME_HEIGHT):
-            return True
-        else:
-            return False
+        # if self.video_capture.get(cv2.CAP_PROP_FRAME_WIDTH) < self.video_capture.get(cv2.CAP_PROP_FRAME_HEIGHT):
+        #     return True
+        # else:
+        #     return False
+        return False
 
     def getInvertedIntervals(self):
         return np.array([[self.intervals[i - 1][1], self.intervals[i][0]] for i in range(1, len(self.intervals))])

@@ -1,0 +1,343 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="AutoImportSettings">
+    <option name="autoReloadType" value="SELECTIVE" />
+  </component>
+  <component name="ChangeListManager">
+    <list default="true" id="5afa1e44-66d7-4920-bb79-0e152557a2d6" name="Changes" comment="Add .gitignore, oio_builder script, and notebook updates&#10;&#10;New .gitignore file has been created to ignore notebook checkpoints. Additionally, the 'oio_builder.py' script is now set up to process a video's lightness and write a new image. The '01_oio-draft.ipynb' notebook also includes a new section for rotating to the difference.">
+      <change beforePath="$PROJECT_DIR$/.idea/misc.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/misc.xml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/zavity.iml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/zavity.iml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/notebooks/01_oio-focused.ipynb" beforeDir="false" afterPath="$PROJECT_DIR$/notebooks/01_oio-focused.ipynb" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/notebooks/05-trojan-v1.ipynb" beforeDir="false" afterPath="$PROJECT_DIR$/notebooks/05-trojan-v1.ipynb" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/config/__init__.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/config/__init__.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/steps/video_camera_motion.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/steps/video_camera_motion.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/src/steps/video_preprocessor.py" beforeDir="false" afterPath="$PROJECT_DIR$/src/steps/video_preprocessor.py" afterDir="false" />
+    </list>
+    <option name="SHOW_DIALOG" value="false" />
+    <option name="HIGHLIGHT_CONFLICTS" value="true" />
+    <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
+    <option name="LAST_RESOLUTION" value="IGNORE" />
+  </component>
+  <component name="FileTemplateManagerImpl">
+    <option name="RECENT_TEMPLATES">
+      <list>
+        <option value="Jupyter Notebook" />
+        <option value="Python Script" />
+      </list>
+    </option>
+  </component>
+  <component name="FlaskConsoleOptions" custom-start-script="import sys&#10;sys.path.extend([WORKING_DIR_AND_PYTHON_PATHS])&#10;from flask.cli import ScriptInfo&#10;locals().update(ScriptInfo(create_app=None).load_app().make_shell_context())&#10;print(&quot;Python %s on %s\nApp: %s [%s]\nInstance: %s&quot; % (sys.version, sys.platform, app.import_name, app.env, app.instance_path))">
+    <envs>
+      <env key="FLASK_APP" value="app" />
+    </envs>
+    <option name="myCustomStartScript" value="import sys&#10;sys.path.extend([WORKING_DIR_AND_PYTHON_PATHS])&#10;from flask.cli import ScriptInfo&#10;locals().update(ScriptInfo(create_app=None).load_app().make_shell_context())&#10;print(&quot;Python %s on %s\nApp: %s [%s]\nInstance: %s&quot; % (sys.version, sys.platform, app.import_name, app.env, app.instance_path))" />
+    <option name="myEnvs">
+      <map>
+        <entry key="FLASK_APP" value="app" />
+      </map>
+    </option>
+  </component>
+  <component name="Git.Settings">
+    <excluded-from-favorite>
+      <branch-storage>
+        <map>
+          <entry type="LOCAL">
+            <value>
+              <list>
+                <branch-info repo="$PROJECT_DIR$" source="main" />
+              </list>
+            </value>
+          </entry>
+        </map>
+      </branch-storage>
+    </excluded-from-favorite>
+    <favorite-branches>
+      <branch-storage>
+        <map>
+          <entry type="LOCAL">
+            <value>
+              <list>
+                <branch-info repo="$PROJECT_DIR$" source="blahafra" />
+              </list>
+            </value>
+          </entry>
+        </map>
+      </branch-storage>
+    </favorite-branches>
+    <option name="RECENT_BRANCH_BY_REPOSITORY">
+      <map>
+        <entry key="$PROJECT_DIR$" value="main" />
+      </map>
+    </option>
+    <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
+  </component>
+  <component name="MarkdownSettingsMigration">
+    <option name="stateVersion" value="1" />
+  </component>
+  <component name="ProjectColorInfo">{
+  &quot;associatedIndex&quot;: 0
+}</component>
+  <component name="ProjectId" id="2aOKqRRHGnU5h8vcr0bj6GsRSjJ" />
+  <component name="ProjectLevelVcsManager">
+    <ConfirmationsSetting value="1" id="Add" />
+  </component>
+  <component name="ProjectViewState">
+    <option name="hideEmptyMiddlePackages" value="true" />
+    <option name="showLibraryContents" value="true" />
+  </component>
+  <component name="PropertiesComponent">{
+  &quot;keyToString&quot;: {
+    &quot;Python.oio_builder.executor&quot;: &quot;Run&quot;,
+    &quot;Python.video_camera_motion.executor&quot;: &quot;Run&quot;,
+    &quot;RunOnceActivity.OpenProjectViewOnStart&quot;: &quot;true&quot;,
+    &quot;RunOnceActivity.ShowReadmeOnStart&quot;: &quot;true&quot;,
+    &quot;git-widget-placeholder&quot;: &quot;blahafra&quot;,
+    &quot;ignore.virus.scanning.warn.message&quot;: &quot;true&quot;,
+    &quot;last_opened_file_path&quot;: &quot;C:/Users/fathe/OneDrive/Documents/UK/MFF/Thesis/zavity&quot;,
+    &quot;node.js.detected.package.eslint&quot;: &quot;true&quot;,
+    &quot;node.js.detected.package.tslint&quot;: &quot;true&quot;,
+    &quot;node.js.selected.package.eslint&quot;: &quot;(autodetect)&quot;,
+    &quot;node.js.selected.package.tslint&quot;: &quot;(autodetect)&quot;,
+    &quot;nodejs_package_manager_path&quot;: &quot;npm&quot;,
+    &quot;settings.editor.selected.configurable&quot;: &quot;com.jetbrains.python.configuration.PyActiveSdkModuleConfigurable&quot;,
+    &quot;vue.rearranger.settings.migration&quot;: &quot;true&quot;
+  }
+}</component>
+  <component name="RecentsManager">
+    <key name="CopyFile.RECENT_KEYS">
+      <recent name="$PROJECT_DIR$/notebooks/.ipynb_checkpoints" />
+    </key>
+    <key name="MoveFile.RECENT_KEYS">
+      <recent name="C:\Users\fathe\OneDrive\Documents\UK\MFF\Thesis\zavity\notebooks" />
+      <recent name="$PROJECT_DIR$/notebooks" />
+    </key>
+  </component>
+  <component name="RunManager">
+    <configuration name="oio_builder" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
+      <module name="zavity" />
+      <option name="ENV_FILES" value="" />
+      <option name="INTERPRETER_OPTIONS" value="" />
+      <option name="PARENT_ENVS" value="true" />
+      <envs>
+        <env name="PYTHONUNBUFFERED" value="1" />
+      </envs>
+      <option name="SDK_HOME" value="" />
+      <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/src/scripts" />
+      <option name="IS_MODULE_SDK" value="true" />
+      <option name="ADD_CONTENT_ROOTS" value="true" />
+      <option name="ADD_SOURCE_ROOTS" value="true" />
+      <EXTENSION ID="PythonCoverageRunConfigurationExtension" runner="coverage.py" />
+      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/src/scripts/oio_builder.py" />
+      <option name="PARAMETERS" value="" />
+      <option name="SHOW_COMMAND_LINE" value="false" />
+      <option name="EMULATE_TERMINAL" value="false" />
+      <option name="MODULE_MODE" value="false" />
+      <option name="REDIRECT_INPUT" value="false" />
+      <option name="INPUT_FILE" value="" />
+      <method v="2" />
+    </configuration>
+    <recent_temporary>
+      <list>
+        <item itemvalue="Python.oio_builder" />
+      </list>
+    </recent_temporary>
+  </component>
+  <component name="SharedIndexes">
+    <attachedChunks>
+      <set>
+        <option value="bundled-js-predefined-d6986cc7102b-5c90d61e3bab-JavaScript-PY-242.23726.102" />
+        <option value="bundled-python-sdk-5e1850174b45-399fe30bd8c1-com.jetbrains.pycharm.pro.sharedIndexes.bundled-PY-242.23726.102" />
+      </set>
+    </attachedChunks>
+  </component>
+  <component name="SpellCheckerSettings" RuntimeDictionaries="0" Folders="0" CustomDictionaries="0" DefaultDictionary="application-level" UseSingleDictionary="true" transferred="true" />
+  <component name="TaskManager">
+    <task active="true" id="Default" summary="Default task">
+      <changelist id="5afa1e44-66d7-4920-bb79-0e152557a2d6" name="Changes" comment="" />
+      <created>1704184376381</created>
+      <option name="number" value="Default" />
+      <option name="presentableId" value="Default" />
+      <updated>1704184376381</updated>
+      <workItem from="1704184378234" duration="22416000" />
+      <workItem from="1704319699119" duration="3033000" />
+      <workItem from="1704377086337" duration="3617000" />
+      <workItem from="1704732639671" duration="106000" />
+      <workItem from="1704732764247" duration="598000" />
+      <workItem from="1704740244544" duration="598000" />
+      <workItem from="1707587389889" duration="885000" />
+      <workItem from="1707589304768" duration="20681000" />
+      <workItem from="1708696496969" duration="1166000" />
+      <workItem from="1710361456169" duration="428000" />
+      <workItem from="1710361906778" duration="598000" />
+      <workItem from="1711382866758" duration="586000" />
+      <workItem from="1711990401900" duration="415000" />
+      <workItem from="1711997398974" duration="44000" />
+      <workItem from="1711997546200" duration="70000" />
+      <workItem from="1711997981416" duration="357000" />
+      <workItem from="1711998889612" duration="28000" />
+      <workItem from="1711999054354" duration="1019000" />
+      <workItem from="1712584660387" duration="754000" />
+      <workItem from="1712860860442" duration="1206000" />
+      <workItem from="1719554608704" duration="129000" />
+      <workItem from="1719554758757" duration="1042000" />
+      <workItem from="1719557829843" duration="1840000" />
+      <workItem from="1719561385651" duration="6841000" />
+      <workItem from="1719987850119" duration="1467000" />
+      <workItem from="1720016180095" duration="3568000" />
+      <workItem from="1720078088220" duration="2442000" />
+      <workItem from="1720083756127" duration="495000" />
+      <workItem from="1720084273871" duration="11083000" />
+      <workItem from="1720163280870" duration="1943000" />
+      <workItem from="1720514945929" duration="22670000" />
+      <workItem from="1720620122371" duration="1750000" />
+      <workItem from="1720703913265" duration="7814000" />
+      <workItem from="1720718862143" duration="4665000" />
+      <workItem from="1720762530700" duration="613000" />
+      <workItem from="1721033782113" duration="5356000" />
+      <workItem from="1721053820811" duration="44971000" />
+      <workItem from="1721279276304" duration="4714000" />
+      <workItem from="1721297633226" duration="28218000" />
+      <workItem from="1721368115359" duration="19663000" />
+      <workItem from="1721637322210" duration="52742000" />
+      <workItem from="1721825458184" duration="14781000" />
+      <workItem from="1722408430534" duration="18212000" />
+      <workItem from="1722498438361" duration="20816000" />
+      <workItem from="1722841414068" duration="4728000" />
+      <workItem from="1722923155168" duration="615000" />
+      <workItem from="1723016929285" duration="4292000" />
+      <workItem from="1723186900994" duration="4114000" />
+      <workItem from="1723449175100" duration="30224000" />
+      <workItem from="1723614394994" duration="20134000" />
+      <workItem from="1723714181899" duration="6741000" />
+      <workItem from="1724758242584" duration="2576000" />
+      <workItem from="1724840560174" duration="18586000" />
+      <workItem from="1724915806352" duration="5620000" />
+      <workItem from="1724935761957" duration="596000" />
+      <workItem from="1725003832748" duration="31275000" />
+      <workItem from="1725196883733" duration="7583000" />
+      <workItem from="1725258110566" duration="15987000" />
+      <workItem from="1725275839507" duration="16824000" />
+      <workItem from="1725344277701" duration="12102000" />
+      <workItem from="1725430729162" duration="12047000" />
+      <workItem from="1725513599664" duration="9958000" />
+      <workItem from="1725525525786" duration="7673000" />
+      <workItem from="1725596973037" duration="66000" />
+      <workItem from="1725597855087" duration="10202000" />
+      <workItem from="1725612788974" duration="6800000" />
+      <workItem from="1725685498890" duration="25335000" />
+      <workItem from="1725777064386" duration="1312000" />
+      <workItem from="1725778581210" duration="8787000" />
+      <workItem from="1725883730848" duration="1695000" />
+      <workItem from="1725892036413" duration="455000" />
+      <workItem from="1726312773412" duration="688000" />
+      <workItem from="1726645959596" duration="22186000" />
+      <workItem from="1726726887061" duration="4842000" />
+      <workItem from="1726733295449" duration="8673000" />
+      <workItem from="1726826263554" duration="8771000" />
+      <workItem from="1727944091905" duration="22550000" />
+      <workItem from="1728913325598" duration="6718000" />
+      <workItem from="1729242476925" duration="3631000" />
+      <workItem from="1729247168143" duration="16022000" />
+      <workItem from="1729267696706" duration="49738000" />
+      <workItem from="1729538917628" duration="746000" />
+      <workItem from="1729539713475" duration="1178000" />
+      <workItem from="1729541517053" duration="691000" />
+      <workItem from="1729582477097" duration="54000" />
+      <workItem from="1729585167075" duration="1992000" />
+      <workItem from="1729589130431" duration="13633000" />
+      <workItem from="1729845628293" duration="18782000" />
+      <workItem from="1729866488366" duration="1889000" />
+      <workItem from="1729931718106" duration="1540000" />
+      <workItem from="1729934230798" duration="3563000" />
+      <workItem from="1729948592287" duration="7790000" />
+      <workItem from="1730271703044" duration="3140000" />
+      <workItem from="1730278257818" duration="714000" />
+    </task>
+    <task id="LOCAL-00001" summary="Add .gitignore, oio_builder script, and notebook updates&#10;&#10;New .gitignore file has been created to ignore notebook checkpoints. Additionally, the 'oio_builder.py' script is now set up to process a video's lightness and write a new image. The '01_oio-draft.ipynb' notebook also includes a new section for rotating to the difference.">
+      <option name="closed" value="true" />
+      <created>1704305941580</created>
+      <option name="number" value="00001" />
+      <option name="presentableId" value="LOCAL-00001" />
+      <option name="project" value="LOCAL" />
+      <updated>1704305941580</updated>
+    </task>
+    <task id="LOCAL-00002" summary="Add .gitignore, oio_builder script, and notebook updates&#10;&#10;New .gitignore file has been created to ignore notebook checkpoints. Additionally, the 'oio_builder.py' script is now set up to process a video's lightness and write a new image. The '01_oio-draft.ipynb' notebook also includes a new section for rotating to the difference.">
+      <option name="closed" value="true" />
+      <created>1719554957380</created>
+      <option name="number" value="00002" />
+      <option name="presentableId" value="LOCAL-00002" />
+      <option name="project" value="LOCAL" />
+      <updated>1719554957380</updated>
+    </task>
+    <task id="LOCAL-00003" summary="Add .gitignore, oio_builder script, and notebook updates&#10;&#10;New .gitignore file has been created to ignore notebook checkpoints. Additionally, the 'oio_builder.py' script is now set up to process a video's lightness and write a new image. The '01_oio-draft.ipynb' notebook also includes a new section for rotating to the difference.">
+      <option name="closed" value="true" />
+      <created>1725526234791</created>
+      <option name="number" value="00003" />
+      <option name="presentableId" value="LOCAL-00003" />
+      <option name="project" value="LOCAL" />
+      <updated>1725526234791</updated>
+    </task>
+    <task id="LOCAL-00004" summary="Add .gitignore, oio_builder script, and notebook updates&#10;&#10;New .gitignore file has been created to ignore notebook checkpoints. Additionally, the 'oio_builder.py' script is now set up to process a video's lightness and write a new image. The '01_oio-draft.ipynb' notebook also includes a new section for rotating to the difference.">
+      <option name="closed" value="true" />
+      <created>1726726933390</created>
+      <option name="number" value="00004" />
+      <option name="presentableId" value="LOCAL-00004" />
+      <option name="project" value="LOCAL" />
+      <updated>1726726933390</updated>
+    </task>
+    <task id="LOCAL-00005" summary="Add .gitignore, oio_builder script, and notebook updates&#10;&#10;New .gitignore file has been created to ignore notebook checkpoints. Additionally, the 'oio_builder.py' script is now set up to process a video's lightness and write a new image. The '01_oio-draft.ipynb' notebook also includes a new section for rotating to the difference.">
+      <option name="closed" value="true" />
+      <created>1726742290166</created>
+      <option name="number" value="00005" />
+      <option name="presentableId" value="LOCAL-00005" />
+      <option name="project" value="LOCAL" />
+      <updated>1726742290166</updated>
+    </task>
+    <task id="LOCAL-00006" summary="Add .gitignore, oio_builder script, and notebook updates&#10;&#10;New .gitignore file has been created to ignore notebook checkpoints. Additionally, the 'oio_builder.py' script is now set up to process a video's lightness and write a new image. The '01_oio-draft.ipynb' notebook also includes a new section for rotating to the difference.">
+      <option name="closed" value="true" />
+      <created>1729537205827</created>
+      <option name="number" value="00006" />
+      <option name="presentableId" value="LOCAL-00006" />
+      <option name="project" value="LOCAL" />
+      <updated>1729537205827</updated>
+    </task>
+    <option name="localTasksCounter" value="7" />
+    <servers />
+  </component>
+  <component name="TypeScriptGeneratedFilesManager">
+    <option name="version" value="3" />
+  </component>
+  <component name="UnknownFeatures">
+    <option featureType="com.intellij.fileTypeFactory" implementationName=".env" />
+  </component>
+  <component name="Vcs.Log.Tabs.Properties">
+    <option name="TAB_STATES">
+      <map>
+        <entry key="MAIN">
+          <value>
+            <State />
+          </value>
+        </entry>
+      </map>
+    </option>
+  </component>
+  <component name="VcsManagerConfiguration">
+    <MESSAGE value="Add .gitignore, oio_builder script, and notebook updates&#10;&#10;New .gitignore file has been created to ignore notebook checkpoints. Additionally, the 'oio_builder.py' script is now set up to process a video's lightness and write a new image. The '01_oio-draft.ipynb' notebook also includes a new section for rotating to the difference." />
+    <option name="LAST_COMMIT_MESSAGE" value="Add .gitignore, oio_builder script, and notebook updates&#10;&#10;New .gitignore file has been created to ignore notebook checkpoints. Additionally, the 'oio_builder.py' script is now set up to process a video's lightness and write a new image. The '01_oio-draft.ipynb' notebook also includes a new section for rotating to the difference." />
+  </component>
+  <component name="XDebuggerManager">
+    <breakpoint-manager>
+      <breakpoints>
+        <line-breakpoint enabled="true" suspend="THREAD" type="jupyter-line">
+          <url>notebook:///Users/gimli/cvr/projects/zavity/notebooks/01_oio-focused.ipynb</url>
+          <line>109</line>
+          <option name="timeStamp" value="4" />
+        </line-breakpoint>
+      </breakpoints>
+    </breakpoint-manager>
+  </component>
+  <component name="com.intellij.coverage.CoverageDataManagerImpl">
+    <SUITE FILE_PATH="coverage/zavity$oio_builder.coverage" NAME="oio_builder Coverage Results" MODIFIED="1725607928846" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/src/scripts" />
+    <SUITE FILE_PATH="coverage/zavity$video_camera_motion.coverage" NAME="video_camera_motion Coverage Results" MODIFIED="1720526431806" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/src/steps" />
+  </component>
+</project>

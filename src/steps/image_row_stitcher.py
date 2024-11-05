@@ -1,4 +1,6 @@
 import os
+from typing import LiteralString
+
 import imageio.v3 as iio
 import numpy as np
 from matplotlib import pyplot as plt
@@ -6,69 +8,67 @@ from scipy.interpolate import RegularGridInterpolator
 from scipy.optimize import minimize
 from tqdm.auto import tqdm
 
+from config import SEARCH_SPACE_SIZE
 from steps.video_camera_motion import VideoMotion
 
 
 class ImageRowStitcher:
+    motions: VideoMotion
     imageRows: list[np.ndarray]
-    video_file_path: str
-    src: str
+    rolledImageRows: list[np.ndarray]
+    video_name: str
+    output_path: str
+    output_oio_path: LiteralString | str | bytes
     video_name: str
     imgA: np.ndarray
     imgB: np.ndarray
     seed_position: np.ndarray
     per_row_shift: np.ndarray
-    rolledImageRows: list[np.ndarray]
     blended_full_image: np.ndarray
     physics: dict
-    motions: VideoMotion
-    move_down: bool
-    search_space_size: tuple[int, int]
 
-    def __init__(self, SRC, video_name, motions, move_down=True, search_space_size=(30, 15)):
+    def __init__(self, output_path, rows, motions, video_path):
         self.motions = motions
-        self.imageRows = []
+        self.imageRows = rows
         self.rolledImageRows = []
-        self.src = SRC
-        self.video_name = video_name
-        self.video_file_path = os.path.join(SRC, video_name)
-        self.move_down = move_down
-        self.search_space_size = search_space_size
+        self.video_name = os.path.basename(video_path)
+        self.output_path = output_path
+        self.output_oio_path = os.path.join(output_path, os.path.splitext(os.path.basename(video_path))[0] + '-oio.png')
 
     def process(self):
-        self.load_or_compute()
-
-    def _dump_path(self, name='oio.png'):
-        return f"{self.video_file_path.removesuffix('.MP4')}-{name}"
-
-    def load_or_compute(self):
-        if os.path.isfile(self._dump_path()):
+        if os.path.isfile(self.output_oio_path):
             pass
         else:
-            self.compute()
+            self.load_or_compute()
 
-    def compute(self):
-        self.loadImageRows()
+    def _dump_path(self, object_name):
+        return os.path.join(self.output_path, os.path.splitext(self.video_name)[0] + f'-{object_name}.npy')
+
+    def dump(self, name: str, object):
+        np.save(self._dump_path(name), object)
+
+    def load_or_compute(self):
         if os.path.isfile(self._dump_path('positions.npy')):
             self.per_row_shift = np.load(self._dump_path('positions.npy'))
         else:
             self.computePositions()
-        np.save(self._dump_path('positions.npy'), self.per_row_shift)
+            np.save(self._dump_path('positions.npy'), self.per_row_shift)
+
         self.rollImageRows()
         self.stitchImageRows()
-        self.dump()
+        self.dumpOIO()
 
-    def dump(self):
-        iio.imwrite(self._dump_path(), self.blended_full_image.astype(np.uint8))
+    def dumpOIO(self):
+        iio.imwrite(self.output_oio_path, self.blended_full_image.astype(np.uint8))
 
     @staticmethod
     def cropArr(arr):
         return arr[:, np.any((arr != 0), axis=0)]
 
-    def loadImageRows(self):
-        for filename in sorted(os.listdir(self.src), reverse=not self.move_down):
-            if self.video_name.removesuffix(".MP4") + "-oio-" in filename and "png" in filename:
-                self.imageRows.append(self.cropArr(iio.imread(os.path.join(self.src, filename))))
+    # def loadImageRows(self):
+    #     for filename in sorted(os.listdir(self.src), reverse=not self.move_down):
+    #         if self.video_name.removesuffix(".MP4") + "-oio-" in filename and "png" in filename:
+    #             self.imageRows.append(self.cropArr(iio.imread(os.path.join(self.src, filename))))
 
     @staticmethod
     def mutual_information(imgA, imgB, bins=15):
@@ -107,9 +107,9 @@ class ImageRowStitcher:
         return self.extract_images_and_compute_mi(shift=x, imgA=self.imgA, imgB=self.imgB,
                                                   seed_position=self.seed_position,
                                                   width=self.imgA.shape[1] - 2 * abs(self.physics["roll"]) -
-                                                        2 * self.search_space_size[0],
+                                                        2 * SEARCH_SPACE_SIZE[0],
                                                   height=self.imgA.shape[0] - self.physics["scan_shift"] -
-                                                         2 * self.search_space_size[1])
+                                                         2 * SEARCH_SPACE_SIZE[1])
 
     @staticmethod
     def show_images(imgA, imgB, seed_position, shift, width):
@@ -139,15 +139,15 @@ class ImageRowStitcher:
             "scan_shift": int(self.motions.getAverageVerticalShift()),
         }
 
-        if self.move_down:
+        if self.motions.isMovingDown():
             self.physics["roll"] = int(np.round(self.imageRows[0].shape[1] * 0.1)) + 36
         else:
             self.physics["roll"] = -int(np.round(self.imageRows[0].shape[1] * 0.1)) + 36
 
-        self.physics["first_frame"] = (self.physics["scan_shift"] + self.search_space_size[1],
-                                       abs(self.physics["roll"]) + self.search_space_size[0])
+        self.physics["first_frame"] = (self.physics["scan_shift"] + SEARCH_SPACE_SIZE[1],
+                                       abs(self.physics["roll"]) + SEARCH_SPACE_SIZE[0])
 
-        print(self.physics)
+        print(f"Physics: {self.physics}\n")
 
         first_frame = self.physics["first_frame"]
         scan_shift = self.physics["scan_shift"]
@@ -164,13 +164,18 @@ class ImageRowStitcher:
             self.seed_position = np.array([first_frame, [first_frame[0] - scan_shift, first_frame[1] + roll]]).astype(
                 int)
             shift_seeds.append(self.seed_position)
+            if np.any(np.isnan(self.imgA)) or np.any(np.isnan(self.imgB)):
+                print("One of the input images contains NaN values.")
             result = minimize(self.to_minimize, x0=np.array([0, 0]), method='Powell',
-                              bounds=[(-self.search_space_size[1], +self.search_space_size[1]),
-                                      (-self.search_space_size[0], self.search_space_size[0])],
+                              bounds=[(-SEARCH_SPACE_SIZE[1], +SEARCH_SPACE_SIZE[1]),
+                                      (-SEARCH_SPACE_SIZE[0], SEARCH_SPACE_SIZE[0])],
                               options={'xtol': 1e-2, 'ftol': 1e-2})
             shift_fixes.append(result.x)
 
         self.per_row_shift = np.array([seed[0, :] - seed[1, :] - fix for seed, fix in zip(shift_seeds, shift_fixes)])
+
+        print(f"Calculated: per row shift\n"
+              f"{self.per_row_shift}")
 
     @staticmethod
     def real_roll(array, shift, axis=0):
@@ -210,7 +215,6 @@ class ImageRowStitcher:
             real_shift.append(int(shift // 1))
 
         out_height = self.rolledImageRows[0].shape[0] + np.max(real_shift)
-
         full_image = np.zeros((out_height, self.rolledImageRows[0].shape[1], len(self.rolledImageRows)))
         for en, (image, r_shift) in enumerate(zip(to_grid, real_shift)):
             full_image[r_shift: r_shift + image.shape[0], :, en] = image
@@ -223,16 +227,19 @@ class ImageRowStitcher:
         blend_matrix[real_shift[1]: to_grid[0].shape[0], :, 0] += np.flipud(lin_blend)
         blend_matrix[real_shift[1]: to_grid[0].shape[0], :, 1] += lin_blend
 
-        for en, (image, r_shift) in tqdm(enumerate(list(zip(to_grid, real_shift))[:-2]), total=len(list(zip(to_grid, real_shift))[:-2]), desc="Blending image"):
+        for en, (image, r_shift) in tqdm(enumerate(list(zip(to_grid, real_shift))[:-2]),
+                                         total=len(list(zip(to_grid, real_shift))[:-2]), desc="Blending image"):
             # print(en, real_shift[en + 2], to_grid[en + 1].shape[0], real_shift[en + 1],(to_grid[en + 1].shape[0] +
             # real_shift[en + 1] - real_shift[en + 2]), np.linspace(0, 1, 1 / (to_grid[en + 1].shape[0] + real_shift[
             # en + 1] - real_shift[en + 2])).shape, np.ones((to_grid[en + 1].shape[1], 1)).T.shape)
             blend_matrix[real_shift[en] + to_grid[en].shape[0]: real_shift[en + 2], :, en + 1] += 1
-            lin_blend = np.dot(np.linspace(0, 1, (to_grid[en + 1].shape[0] + real_shift[en + 1] - real_shift[en + 2]), endpoint=False).reshape(-1, 1), np.ones((to_grid[en + 1].shape[1], 1)).T)
+            lin_blend = np.dot(np.linspace(0, 1, (to_grid[en + 1].shape[0] + real_shift[en + 1] - real_shift[en + 2]),
+                                           endpoint=False).reshape(-1, 1), np.ones((to_grid[en + 1].shape[1], 1)).T)
             blend_matrix[real_shift[en + 2]: to_grid[en + 1].shape[0] + real_shift[en + 1], :, en + 1] += np.flipud(
                 lin_blend)
             blend_matrix[real_shift[en + 2]: to_grid[en + 1].shape[0] + real_shift[en + 1], :, en + 2] += lin_blend
 
+        print("Finishing up...")
         blend_matrix[to_grid[en + 1].shape[0] + real_shift[en + 1]:, :, -1] += 1
 
         self.blended_full_image = np.sum(full_image * blend_matrix, axis=2) / np.sum(blend_matrix, axis=2)
