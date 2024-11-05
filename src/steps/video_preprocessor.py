@@ -192,10 +192,6 @@ class VideoPreprocessor:
                            merge_threshold=THRESHOLD_DISTANCE_FOR_BREAKPOINT_MERGE, secondary=True,
                            segment_type_return=False):
 
-        if self.video_capture.get(cv2.CAP_PROP_FRAME_COUNT) < 1000:
-            step = 1
-            merge_threshold = 5
-
         if angles is None:
             angles = self.angles
 
@@ -334,7 +330,7 @@ class VideoPreprocessor:
         fa = []
 
         j = 0
-        if angles[breakpoints[2]] < angles[breakpoints[3]]:
+        if angles[breakpoints[2]] < angles[breakpoints[1]]:
             k = 0
         else:
             k = 1
