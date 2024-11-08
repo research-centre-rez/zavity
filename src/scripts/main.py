@@ -11,6 +11,15 @@ from steps.image_row_builder import construct_rows
 from steps.image_row_stitcher import ImageRowStitcher
 from steps.video_camera_motion import VideoMotion
 from steps.video_preprocessor import VideoPreprocessor
+from timeit import default_timer as timer
+from contextlib import contextmanager
+
+@contextmanager
+def timing(name):
+    start = timer()
+    yield
+    end = timer()
+    print(f"{name}: {end - start:.4f} seconds")
 
 
 def process_single_video(video_path, output_path, calc_rot_per_frame):
@@ -28,19 +37,25 @@ def process_multiple_videos(folder_path, output_path, calc_rot_per_frame):
 
 
 def process_video(video_path, output_path, calc_rot_per_frame):
-    preprocessor = VideoPreprocessor(video_path, output_path, calc_rot_per_frame)
-    preprocessor.process()
-    video_file_path = preprocessor.getOutputVideoFilePath()
+    with timing("Total OIO Pipeline"):
+        # Pipeline stages
+        with timing("Preprocessor"):
+            preprocessor = VideoPreprocessor(video_path, output_path, calc_rot_per_frame)
+            preprocessor.process()
+            video_file_path = preprocessor.getOutputVideoFilePath()
 
-    motions = VideoMotion(video_file_path, output_path)
-    motions.process()
+        with timing("VideoMotion"):
+            motions = VideoMotion(video_file_path, output_path)
+            motions.process()
 
-    rows = construct_rows(motions, video_file_path, output_path)
+        with timing("RowBuilder"):
+            rows = construct_rows(motions, video_file_path, output_path)
 
-    stitcher = ImageRowStitcher(output_path, rows, motions, video_path)
-    stitcher.process()
+        with timing("RowStitcher"):
+            stitcher = ImageRowStitcher(output_path, rows, motions, video_path)
+            stitcher.process()
 
-    print("OIO done")
+    # print("OIO done")
 
 
 if __name__ == "__main__":
