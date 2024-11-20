@@ -11,7 +11,7 @@ INPUT_FOLDER = os.path.join(PROJECT_DIR, 'input')  # Input folder at the same le
 # CONSTANTS
 
 # VideoPreprocessor config
-ROT_PER_FRAME = 0.12734514911853811
+ROT_PER_FRAME = 0.12734514911853811 # 0.12711575238356873
 # window coordinates
 Y1 = 550    # Y1-PADDING cant be lower then 0
 Y2 = 1850   # Y2+PADDING cant be bigger then 2160
@@ -22,6 +22,8 @@ SAMPLES = 1000
 THRESHOLD_DISTANCE_FOR_BREAKPOINT_MERGE = 1
 EVERY_NTH_FRAME = 40  # min(2*6x+20000/x) min(2*num_of_border_breakpoints*x+total_frames/x)
 SIGMA = 3 # to denoise histogram of angles with gaussian
+CODEC = 'MJPG' # 'mp4v'
+EXT = '.avi' # '.mp4'
 
 # VideoMotion config
 FPS_REDUCTION = 1

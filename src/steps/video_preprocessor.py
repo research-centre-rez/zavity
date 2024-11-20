@@ -12,7 +12,7 @@ from scipy.signal import savgol_filter
 from tqdm.auto import tqdm
 
 from config import (Y1, Y2, X1, X2, SAMPLES, THRESHOLD_DISTANCE_FOR_BREAKPOINT_MERGE, EVERY_NTH_FRAME,
-                    ROT_PER_FRAME, SIGMA, PADDING)
+                    ROT_PER_FRAME, SIGMA, PADDING, CODEC, EXT)
 
 
 class VideoPreprocessor:
@@ -30,7 +30,7 @@ class VideoPreprocessor:
         self.video_name = os.path.basename(video_path)
         self.output_path = output_path
         self.output_video_file_path = os.path.join(output_path,
-                                                   os.path.splitext(self.video_name)[0] + '_preprocessed.mp4')
+                                                   os.path.splitext(self.video_name)[0] + '_preprocessed' + EXT)
         self.video_capture = cv2.VideoCapture(video_path)
         self.angles = []
         self.borderBreakpoints = []
@@ -43,8 +43,8 @@ class VideoPreprocessor:
             print(f"Pre-processing video: {self.video_name}")
             self.load_or_compute()
 
-    def _dump_path(self, object_name):
-        return os.path.join(self.output_path, os.path.splitext(self.video_name)[0] + f'-{object_name}.npy')
+    def _dump_path(self, object_name, extension='npy'):
+        return os.path.join(self.output_path, os.path.splitext(self.video_name)[0] + f'-{object_name}.{extension}')
 
     def dump(self, name: str, object):
         np.save(self._dump_path(name), object)
@@ -56,7 +56,7 @@ class VideoPreprocessor:
             else:
                 angles = self.computeAngles(step=1)
                 self.dump('full_angles', angles)
-            breakpoints = self.computeBreakpoints(angles, filter=8, step=1, merge_threshold=5)
+            breakpoints = self.computeBreakpoints(angles, filter=8, step=1, merge_threshold=10)
             self.plotAngles(angles, breakpoints)
             borderBreakpoints = self.computeBorderBreakpoints(breakpoints, 1)
             self.rotation_per_frame = self.computeRotationPerFrame(angles, breakpoints, borderBreakpoints)
@@ -328,20 +328,16 @@ class VideoPreprocessor:
 
     def computeRotationPerFrame(self, angles, breakpoints, borderBreakpoints):
         fa = []
-
         j = 0
-        if angles[breakpoints[2]] < angles[breakpoints[1]]:
-            k = 0
-        else:
-            k = 1
+        k = 0
         start, end = borderBreakpoints[j]
         for i in range(0, len(breakpoints) - 1):
             if not start == breakpoints[i]:
-                segment = -stats.mode(self.segment_type[breakpoints[i]:breakpoints[i + 1]])[0]
-                offset = -(k // 2 * 180)
-                if not start == breakpoints[i + 1]:
+                segment = stats.mode(self.segment_type[breakpoints[i]:breakpoints[i + 1]])[0]
+                offset = -(k * 180)
+                if segment == 1 and not start == breakpoints[i + 1]:
                     k += 1
-                f = angles[breakpoints[i]:breakpoints[i + 1]] * segment + offset
+                f = angles[breakpoints[i]:breakpoints[i + 1]] * -segment + offset
                 fa = np.concatenate([fa, f])
             else:
                 j += 1
@@ -353,6 +349,8 @@ class VideoPreprocessor:
         plt.plot(fa)
         plt.plot([(a * x + b) for x in np.arange(len(fa))])
         plt.show()
+        plt.savefig(self._dump_path("RPF_function", "png"))
+        plt.close()
 
         print(f"Calculated : RotationPerFrame\n"
               f"{-a}")
@@ -384,7 +382,7 @@ class VideoPreprocessor:
 
         out = cv2.VideoWriter(self.getOutputVideoFilePath(),
                               apiPreference=cv2.CAP_FFMPEG,
-                              fourcc=cv2.VideoWriter_fourcc(*'mp4v'),
+                              fourcc=cv2.VideoWriter_fourcc(*CODEC),
                               fps=60.0,
                               frameSize=(X2 - X1, Y2 - Y1),
                               params=[
@@ -429,6 +427,8 @@ class VideoPreprocessor:
                 plt.axvline(start, color="green")
                 plt.axvline(end, color="red")
         plt.show()
+        plt.savefig(self._dump_path("angles", "png"))
+        plt.close()
 
     def getOutputVideoFilePath(self):
         return self.output_video_file_path
