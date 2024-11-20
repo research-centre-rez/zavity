@@ -11,7 +11,6 @@ from config import BLENDED_PIXELS_PER_FRAME, BLENDED_PIXELS_SHIFT
 def construct_rows(motions, video_file_path, output_path):
     print(f"Processing RowBuilder for: {video_file_path}\n")
     vidcap = cv2.VideoCapture(video_file_path)
-    rows = []
     for i, interval in enumerate(motions.getIntervals()):
         mn, mx = interval
         start = mn + (mx - mn) // 2 - motions.getFramesPer360() // 2
@@ -22,12 +21,6 @@ def construct_rows(motions, video_file_path, output_path):
                                 rotation=motions.isPortrait(), shift_per_frame=motions.getHorizontalSpeed(),
                                 frames_per_360_deg=motions.getFramesPer360())
             iio.imwrite(file_path, row.astype(np.uint8))
-            row = iio.imread(file_path)
-        else:
-            row = iio.imread(file_path)
-        rows.append(row)
-
-    return rows
 
 
 def construct_row(vidcap,
