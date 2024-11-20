@@ -1,4 +1,5 @@
 import os
+import re
 from typing import LiteralString
 
 import imageio.v3 as iio
@@ -27,9 +28,9 @@ class ImageRowStitcher:
     blended_full_image: np.ndarray
     physics: dict
 
-    def __init__(self, output_path, rows, motions, video_path):
+    def __init__(self, output_path, motions, video_path):
         self.motions = motions
-        self.imageRows = rows
+        self.imageRows = []
         self.rolledImageRows = []
         self.video_name = os.path.basename(video_path)
         self.output_path = output_path
@@ -38,10 +39,18 @@ class ImageRowStitcher:
     def process(self):
         if os.path.isfile(self.output_oio_path):
             pass
-        if len(self.imageRows) == 1:
-            iio.imwrite(self.output_oio_path, self.imageRows[0].astype(np.uint8))
         else:
-            self.load_or_compute()
+            self.load_img_rows()
+            if len(self.imageRows) == 1:
+                iio.imwrite(self.output_oio_path, self.imageRows[0].astype(np.uint8))
+            else:
+                self.load_or_compute()
+
+    def load_img_rows(self):
+        pattern = rf"^{re.escape(os.path.splitext(self.video_name)[0])}.*-oio-.\.png$"
+        for filename in [file for file in os.listdir(self.output_path) if re.match(pattern, file)]:
+            self.imageRows.append(iio.imread(os.path.join(self.output_path, filename)))
+        print(f"Loaded {len(self.imageRows)} row images\n")
 
     def _dump_path(self, object_name):
         return os.path.join(self.output_path, os.path.splitext(self.video_name)[0] + f'-{object_name}.npy')
