@@ -12,7 +12,7 @@ from scipy.signal import savgol_filter
 from tqdm.auto import tqdm
 
 from config import (Y1, Y2, X1, X2, SAMPLES, THRESHOLD_DISTANCE_FOR_BREAKPOINT_MERGE, EVERY_NTH_FRAME,
-                    ROT_PER_FRAME, SIGMA, PADDING, CODEC, EXT)
+                    ROT_PER_FRAME, SIGMA, PADDING, CODEC, EXT, BORDER_BPS, REFINED_BP, CALIBRATE)
 
 
 class VideoPreprocessor:
@@ -70,27 +70,32 @@ class VideoPreprocessor:
             print(f"Loaded precalculated rotation per frame\n"
                   f"{self.rotation_per_frame}\n")
 
-        if os.path.isfile(self._dump_path("angles")):
-            self.angles = np.load(self._dump_path("angles"))
-            print(f"Loaded {self._dump_path('angles')}\n")
-        else:
-            self.angles = self.computeAngles()
-            self.dump("angles", self.angles)
-
-        if os.path.isfile(self._dump_path("breakpoints")) and os.path.isfile(self._dump_path("borderBreakpoints")):
-            self.borderBreakpoints = np.load(self._dump_path("borderBreakpoints"))
-            print(f"Loaded {self._dump_path('borderBreakpoints')}\n"
+        if BORDER_BPS and REFINED_BP:
+            self.borderBreakpoints = BORDER_BPS
+            print(f"Loaded Border Breakpoints from config\n"
                   f"{self.borderBreakpoints}\n")
-            self.breakpoints = np.load(self._dump_path("breakpoints"))
-            print(f"Loaded {self._dump_path('breakpoints')}\n"
-                  f"{self.breakpoints}\n")
         else:
-            self.breakpoints = self.computeBreakpoints(self.angles, step=EVERY_NTH_FRAME,
-                                                       merge_threshold=EVERY_NTH_FRAME)
-            self.dump("breakpoints", self.breakpoints)
-            borderBreakpoints = self.computeBorderBreakpoints(self.breakpoints, EVERY_NTH_FRAME)
-            self.borderBreakpoints = self.refineBorderBreakpoints(borderBreakpoints, step=EVERY_NTH_FRAME)
-            self.dump("borderBreakpoints", self.borderBreakpoints)
+            if os.path.isfile(self._dump_path("angles")):
+                self.angles = np.load(self._dump_path("angles"))
+                print(f"Loaded {self._dump_path('angles')}\n")
+            else:
+                self.angles = self.computeAngles()
+                self.dump("angles", self.angles)
+
+            if os.path.isfile(self._dump_path("breakpoints")) and os.path.isfile(self._dump_path("borderBreakpoints")):
+                self.borderBreakpoints = np.load(self._dump_path("borderBreakpoints"))
+                print(f"Loaded {self._dump_path('borderBreakpoints')}\n"
+                      f"{self.borderBreakpoints}\n")
+                self.breakpoints = np.load(self._dump_path("breakpoints"))
+                print(f"Loaded {self._dump_path('breakpoints')}\n"
+                      f"{self.breakpoints}\n")
+            else:
+                self.breakpoints = self.computeBreakpoints(self.angles, step=EVERY_NTH_FRAME,
+                                                           merge_threshold=EVERY_NTH_FRAME)
+                self.dump("breakpoints", self.breakpoints)
+                borderBreakpoints = self.computeBorderBreakpoints(self.breakpoints, EVERY_NTH_FRAME)
+                self.borderBreakpoints = self.refineBorderBreakpoints(borderBreakpoints, step=EVERY_NTH_FRAME)
+                self.dump("borderBreakpoints", self.borderBreakpoints)
 
         self.compute()
 
@@ -156,27 +161,29 @@ class VideoPreprocessor:
                     dev.append((float(x), float(y)))
             dev = np.array(dev)
             if len(dev) == 0:
-                print("Something wrong happen")
-            samples = 1000
-            choice = np.random.randint(0, len(dev), samples)
-            xx0 = np.matmul(dev[choice, 0].reshape(-1, 1), np.ones((1, len(choice))))
-            yy0 = np.matmul(dev[choice, 1].reshape(-1, 1), np.ones((1, len(choice))))
-            xx1 = np.matmul(np.ones((len(choice), 1)), dev[choice, 0].reshape(1, -1))
-            yy1 = np.matmul(np.ones((len(choice), 1)), dev[choice, 1].reshape(1, -1))
-            valid = np.zeros_like(xx0, dtype=bool)
-            valid[xx0 != xx1] = 1
-            angles = np.zeros_like(xx0, np.float32)
-            angles[xx0 == xx1] = np.pi / 2
-            angles[valid] = np.arctan((yy0[valid] - yy1[valid]) / (xx0[valid] - xx1[valid])).reshape(-1)
-            angles[np.eye(samples, dtype=bool)] = np.nan
+                print(f"Devernay did not find any angles for frame: {i}")
+                computed_angles.append(45)
+            else:
+                samples = 1000
+                choice = np.random.randint(0, len(dev), samples)
+                xx0 = np.matmul(dev[choice, 0].reshape(-1, 1), np.ones((1, len(choice))))
+                yy0 = np.matmul(dev[choice, 1].reshape(-1, 1), np.ones((1, len(choice))))
+                xx1 = np.matmul(np.ones((len(choice), 1)), dev[choice, 0].reshape(1, -1))
+                yy1 = np.matmul(np.ones((len(choice), 1)), dev[choice, 1].reshape(1, -1))
+                valid = np.zeros_like(xx0, dtype=bool)
+                valid[xx0 != xx1] = 1
+                angles = np.zeros_like(xx0, np.float32)
+                angles[xx0 == xx1] = np.pi / 2
+                angles[valid] = np.arctan((yy0[valid] - yy1[valid]) / (xx0[valid] - xx1[valid])).reshape(-1)
+                angles[np.eye(samples, dtype=bool)] = np.nan
 
-            filtered = np.rad2deg(np.abs(angles[~np.isnan(angles)]))
+                filtered = np.rad2deg(np.abs(angles[~np.isnan(angles)]))
 
-            if filename is not None and os.path.exists(filename):
-                os.remove(filename)
+                if filename is not None and os.path.exists(filename):
+                    os.remove(filename)
 
-            angle = self.computeAngle(filtered)
-            computed_angles.append(angle)
+                angle = self.computeAngle(filtered)
+                computed_angles.append(angle)
 
         print(f"Angles calculated from {start} to {end} with step {step}\n")
         return computed_angles
@@ -299,7 +306,7 @@ class VideoPreprocessor:
 
             refined.append([start_breakpoint, end_breakpoint])
 
-        print(f"Calculated: Refined Breakpoints\n"
+        print(f"Calculated: Refined Border Breakpoints\n"
               f"{refined}\n")
 
         return refined
@@ -369,12 +376,17 @@ class VideoPreprocessor:
             _, video_start = self.borderBreakpoints[0]
             video_end, _ = self.video_capture.get(cv2.CAP_PROP_FRAME_COUNT)
 
-        if self.angles[self.breakpoints[2] // EVERY_NTH_FRAME] < self.angles[self.breakpoints[1] // EVERY_NTH_FRAME]:
-            angle_breakpoint = self.refineBreakpoint(self.breakpoints[2])
+        if REFINED_BP:
+            angle_breakpoint = REFINED_BP
+            print(f"Loaded Refined Breakpoint from config\n"
+                  f"{angle_breakpoint}\n")
         else:
-            angle_breakpoint = self.refineBreakpoint(self.breakpoints[3])
+            if self.angles[self.breakpoints[2] // EVERY_NTH_FRAME] < self.angles[self.breakpoints[1] // EVERY_NTH_FRAME]:
+                angle_breakpoint = self.refineBreakpoint(self.breakpoints[2])
+            else:
+                angle_breakpoint = self.refineBreakpoint(self.breakpoints[3])
 
-        angle = -self.rotation_per_frame * (angle_breakpoint - video_start)
+        angle = -self.rotation_per_frame * (angle_breakpoint - video_start) - 90
 
         self.video_capture.set(cv2.CAP_PROP_POS_FRAMES, video_start)
         total_frames = video_end - video_start
@@ -395,6 +407,13 @@ class VideoPreprocessor:
 
         for i in tqdm(range(total_frames), desc="PreProcessing frames"):
             success, frame = self.video_capture.read()
+            if CALIBRATE:
+                h, w = frame.shape[:2]
+                # print(os.listdir())
+                mtx = np.load("src/mtx.npy")
+                dist = np.load("src/dist.npy")
+                new_camera_mtx, roi = cv2.getOptimalNewCameraMatrix(mtx, dist, (w, h), 1, (w, h))
+                frame = cv2.undistort(frame, mtx, dist, None, new_camera_mtx)
             frame = frame[Y1 - PADDING:Y2 + PADDING, X1 - PADDING:X2 + PADDING]
             rotate_matrix = cv2.getRotationMatrix2D((frame.shape[1] / 2, frame.shape[0] / 2), angle, 1)
             rotated_image = cv2.warpAffine(

@@ -1,3 +1,4 @@
+import math
 import os
 import re
 from typing import LiteralString
@@ -41,6 +42,7 @@ class ImageRowStitcher:
             pass
         else:
             self.load_img_rows()
+            self.alighHeight()
             if len(self.imageRows) == 1:
                 iio.imwrite(self.output_oio_path, self.imageRows[0].astype(np.uint8))
             else:
@@ -51,6 +53,16 @@ class ImageRowStitcher:
         for filename in [file for file in os.listdir(self.output_path) if re.match(pattern, file)]:
             self.imageRows.append(iio.imread(os.path.join(self.output_path, filename)))
         print(f"Loaded {len(self.imageRows)} row images\n")
+
+    def alighHeight(self):
+        shapes = []
+        for r in self.imageRows:
+            shapes.append(r.shape)
+        desired_shape = np.min(shapes, axis=0)
+        for i, r in enumerate(self.imageRows):
+            crop = r.shape - desired_shape
+            self.imageRows[i] = r[math.floor(crop[0] / 2):r.shape[0] - math.ceil(crop[0] / 2),
+                             math.floor(crop[1] / 2):r.shape[1] - math.ceil(crop[1] / 2)]
 
     def _dump_path(self, object_name):
         return os.path.join(self.output_path, os.path.splitext(self.video_name)[0] + f'-{object_name}.npy')
@@ -150,10 +162,10 @@ class ImageRowStitcher:
             "scan_shift": int(self.motions.getAverageVerticalShift()),
         }
 
-        if self.motions.isMovingDown():
-            self.physics["roll"] = int(np.round(self.imageRows[0].shape[1] * 0.1)) + 36
+        if self.motions.getDirection() == 'CCW':
+            self.physics["roll"] = int(np.round(self.imageRows[0].shape[1] * 0.05))
         else:
-            self.physics["roll"] = -int(np.round(self.imageRows[0].shape[1] * 0.1)) + 36
+            self.physics["roll"] = -int(np.round(self.imageRows[0].shape[1] * 0.05))
 
         self.physics["first_frame"] = (self.physics["scan_shift"] + SEARCH_SPACE_SIZE[1],
                                        abs(self.physics["roll"]) + SEARCH_SPACE_SIZE[0])
@@ -254,3 +266,4 @@ class ImageRowStitcher:
         blend_matrix[to_grid[en + 1].shape[0] + real_shift[en + 1]:, :, -1] += 1
 
         self.blended_full_image = np.sum(full_image * blend_matrix, axis=2) / np.sum(blend_matrix, axis=2)
+

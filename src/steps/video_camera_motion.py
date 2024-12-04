@@ -7,7 +7,7 @@ import pandas as pd
 from scipy.stats import stats
 from tqdm.auto import tqdm
 
-from config import FPS_REDUCTION, RESOLUTION_DECS
+from config import FPS_REDUCTION, RESOLUTION_DECS, ROW_OVERLAP
 
 
 class VideoMotion:
@@ -295,7 +295,7 @@ class VideoMotion:
 
     def computeFramesPer360(self):
         results = []
-        frame_shift = int(np.ceil(np.mean(self.intervals[:, 1] - self.intervals[:, 0]) / 1.1))
+        frame_shift = int(np.ceil(np.mean(self.intervals[:, 1] - self.intervals[:, 0]) / ROW_OVERLAP))
 
         for start, end in self.intervals:
             frame = int(start + 100)
