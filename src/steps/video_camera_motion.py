@@ -8,6 +8,7 @@ from scipy.stats import stats
 from tqdm.auto import tqdm
 
 from config import FPS_REDUCTION, RESOLUTION_DECS, ROW_OVERLAP
+from steps.video_preprocessor import VideoPreprocessor
 
 
 class VideoMotion:
@@ -25,7 +26,7 @@ class VideoMotion:
     frames_per_360 = int
     cw = bool
 
-    def __init__(self, video_file_path: str, output_path: str):
+    def __init__(self, video_file_path: str, output_path: str, preprocessor: VideoPreprocessor):
         self.speeds = {}
         self.stats = {}
         self.motion_directions = []
@@ -37,6 +38,7 @@ class VideoMotion:
         self.video_file_path = video_file_path
         self.output_path = output_path
         self.video_name = os.path.basename(video_file_path)
+        self.preprocessor = preprocessor
 
     @staticmethod
     def getCorners(gray_frame, **feature_params):
@@ -57,11 +59,8 @@ class VideoMotion:
             self.computeMotion()
             self.dump("motion_directions", self.motion_directions)
             self.dump("motion_positions", self.motion_positions)
-        if os.path.isfile(self._dump_path("intervals")) and os.path.isfile(
-                self._dump_path("speeds")) and os.path.isfile(self._dump_path("frames_per_360")) and os.path.isfile(
-            self._dump_path("stats")):
-            self.intervals = np.load(self._dump_path("intervals"))
-            print(f"Intervals: {self.intervals} Loaded")
+        if os.path.isfile(self._dump_path("speeds")) and os.path.isfile(self._dump_path("frames_per_360")) and os.path.isfile(self._dump_path("stats")):
+            self.loadIntervals()
             with open(self._dump_path("speeds"), 'rb') as fp:
                 self.speeds = pickle.load(fp)
             with open(self._dump_path("stats"), 'rb') as fp:
@@ -75,7 +74,7 @@ class VideoMotion:
             self.compute()
 
     def compute(self):
-        self.computeIntervals()
+        self.loadIntervals()
         self.computeSpeeds()
         self.computeFramesPer360()
         self.dump("intervals", self.intervals)
@@ -89,21 +88,6 @@ class VideoMotion:
     def getCommonDirection(motion_direction):
         return stats.mode(motion_direction)
 
-    def computeIntervals(self):
-        desired_movement = self.getCommonDirection(self.motion_directions)[0]
-        start = 0
-
-        for i in range(1, len(self.motion_directions)):
-            if self.motion_directions[i] != self.motion_directions[start]:
-                if i - start > 10 and self.motion_directions[start] == desired_movement:
-                    self.intervals = np.append(self.intervals, [[start, i - 1]], axis=0)
-                start = i
-
-        if len(self.motion_directions) - 1 - start > 10 and self.motion_directions[start] == desired_movement:
-            self.intervals = np.append(self.intervals, [[start, len(self.motion_directions) - 1]], axis=0)
-
-        self.merge_intervals(120)
-        print(f"Intervals: {self.intervals} Calculated")
 
     def merge_intervals(self, max_gap):
         merged_intervals = [self.intervals[0]]
@@ -295,10 +279,11 @@ class VideoMotion:
 
     def computeFramesPer360(self):
         results = []
+
         frame_shift = int(np.ceil(np.mean(self.intervals[:, 1] - self.intervals[:, 0]) / ROW_OVERLAP))
 
         for start, end in self.intervals:
-            frame = int(start + 100)
+            frame = int(start + 50)
             self.video_capture.set(cv2.CAP_PROP_POS_FRAMES, frame)
             stat_a, a = self.video_capture.read()
             self.video_capture.set(cv2.CAP_PROP_POS_FRAMES, frame + frame_shift)
@@ -336,13 +321,17 @@ class VideoMotion:
 
                 # print(move, p1.shape, p0.shape)
 
-                result = np.ceil(frame_shift + move[0] / abs(self.speeds['horizontal'])).astype(int)
+                result = frame_shift + move[0] / abs(self.speeds['horizontal'])
                 # print(result)
 
                 results.append(result)
 
-        self.frames_per_360 = np.mean(results)
+        self.frames_per_360 = np.ceil(np.mean(results)).astype(int)
         print(f"Frames per 360: {self.frames_per_360} calculated from frame_shift: {frame_shift}")
 
     def getFramesPer360(self):
         return self.frames_per_360
+
+    def loadIntervals(self):
+        self.intervals = np.array(self.preprocessor.getIntervals())
+        print(f"Intervals:\n {self.intervals}\nLoaded\n")

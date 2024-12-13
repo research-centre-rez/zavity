@@ -1,6 +1,7 @@
 import os
 import subprocess
 import tempfile
+from typing import LiteralString
 
 import cv2
 import imageio.v3 as iio
@@ -12,12 +13,13 @@ from scipy.signal import savgol_filter
 from tqdm.auto import tqdm
 
 from config import (Y1, Y2, X1, X2, SAMPLES, THRESHOLD_DISTANCE_FOR_BREAKPOINT_MERGE, EVERY_NTH_FRAME,
-                    ROT_PER_FRAME, SIGMA, PADDING, CODEC, EXT, BORDER_BPS, REFINED_BP, CALIBRATE)
+                    ROT_PER_FRAME, SIGMA, PADDING, CODEC, EXT, BORDER_BPS, REFINED_BP, CALIBRATE,
+                    INTERVAL_FILTER_TH)
 
 
 class VideoPreprocessor:
     video_name: str
-    output_video_file_path: str
+    output_video_file_path: LiteralString | str | bytes
     video_capture: cv2.VideoCapture
     angles: list
     borderBreakpoints: list
@@ -37,8 +39,10 @@ class VideoPreprocessor:
         self.calc_rot_per_frame = calc_rot_per_frame
 
     def process(self):
-        if os.path.isfile(self.getOutputVideoFilePath()):
-            pass
+        if os.path.isfile(self.getOutputVideoFilePath()) and os.path.isfile(self._dump_path("borderBreakpoints")):
+            self.borderBreakpoints = np.load(self._dump_path("borderBreakpoints"))
+            print(f"Loaded {self._dump_path('borderBreakpoints')}\n"
+                  f"{self.borderBreakpoints}\n")
         else:
             print(f"Pre-processing video: {self.video_name}")
             self.load_or_compute()
@@ -100,8 +104,8 @@ class VideoPreprocessor:
         self.compute()
 
     def compute(self):
-        self.plotAngles(self.angles, borderBreakpoints=self.borderBreakpoints, step=EVERY_NTH_FRAME)
-        self.preprocessVideo()
+        self.plotAngles(self.angles, borderBreakpoints=self.borderBreakpoints, breakpoints=self.breakpoints, step=EVERY_NTH_FRAME)
+        self.preprocess_video()
 
     @staticmethod
     def unixPathToWinPath(path):
@@ -364,17 +368,12 @@ class VideoPreprocessor:
 
         return -a
 
-    def preprocessVideo(self):
+    def preprocess_video(self):
+        i_row = 0
         if len(self.borderBreakpoints) >= 2:
-            i_row = 1
             start, end = self.borderBreakpoints[i_row]
-            _, video_start = self.borderBreakpoints[0]
-            video_end, _ = self.borderBreakpoints[-1]
         else:
-            start = 0
-            end = 999999
-            _, video_start = self.borderBreakpoints[0]
-            video_end, _ = self.video_capture.get(cv2.CAP_PROP_FRAME_COUNT)
+            start, end = 0, 999999
 
         if REFINED_BP:
             angle_breakpoint = REFINED_BP
@@ -386,13 +385,12 @@ class VideoPreprocessor:
             else:
                 angle_breakpoint = self.refineBreakpoint(self.breakpoints[3])
 
-        angle = -self.rotation_per_frame * (angle_breakpoint - video_start) - 90
+        angle = -self.rotation_per_frame * angle_breakpoint
 
-        self.video_capture.set(cv2.CAP_PROP_POS_FRAMES, video_start)
-        total_frames = video_end - video_start
-        # total_frames = 100
+        self.video_capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
+        total_frames = int(self.video_capture.get(cv2.CAP_PROP_FRAME_COUNT))
 
-        out = cv2.VideoWriter(self.getOutputVideoFilePath(),
+        out = cv2.VideoWriter(str(self.getOutputVideoFilePath()),
                               apiPreference=cv2.CAP_FFMPEG,
                               fourcc=cv2.VideoWriter_fourcc(*CODEC),
                               fps=60.0,
@@ -422,14 +420,14 @@ class VideoPreprocessor:
 
             out.write(rotated_image.astype(np.uint8))
 
-            if not (start <= i + video_start < end):
+            if i < start:
                 angle += self.rotation_per_frame
-                if i + video_start == end:
-                    i_row += 1
-                    if i_row < len(self.borderBreakpoints):
-                        start, end = self.borderBreakpoints[i_row]
-                    else:
-                        print(f"Reached out of index {i_row}")
+            if i == end:
+                i_row += 1
+                if i_row < len(self.borderBreakpoints):
+                    start, end = self.borderBreakpoints[i_row]
+                else:
+                    print(f"Reached out of index {i_row}")
 
         out.release()
 
@@ -451,3 +449,33 @@ class VideoPreprocessor:
 
     def getOutputVideoFilePath(self):
         return self.output_video_file_path
+
+    def getIntervals(self):
+        start = 0
+        end = self.video_capture.get(cv2.CAP_PROP_FRAME_COUNT)
+        inverted = []
+
+        # Step 1: Generate inverted intervals
+        if self.borderBreakpoints[0][0] > start:
+            inverted.append([start, self.borderBreakpoints[0][0] - 1])
+
+        for i in range(1, len(self.borderBreakpoints)):
+            inverted.append([self.borderBreakpoints[i - 1][1] + 1, self.borderBreakpoints[i][0] - 1])
+
+        if self.borderBreakpoints[-1][1] < end:
+            inverted.append([self.borderBreakpoints[-1][1] + 1, end])
+
+        # Step 2: Calculate average size of intervals
+        sizes = [interval[1] - interval[0] + 1 for interval in inverted]
+        avg_size = sum(sizes) / len(sizes)
+
+        # Step 3: Define a threshold
+        threshold = INTERVAL_FILTER_TH * avg_size
+
+        # Step 4: Filter first and last intervals if they are below the threshold
+        if len(inverted) > 1 and (inverted[0][1] - inverted[0][0] + 1) < threshold:
+            inverted.pop(0)
+        if len(inverted) > 1 and (inverted[-1][1] - inverted[-1][0] + 1) < threshold:
+            inverted.pop(-1)
+
+        return inverted

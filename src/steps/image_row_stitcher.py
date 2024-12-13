@@ -10,7 +10,7 @@ from scipy.interpolate import RegularGridInterpolator
 from scipy.optimize import minimize
 from tqdm.auto import tqdm
 
-from config import SEARCH_SPACE_SIZE
+from config import SEARCH_SPACE_SIZE, TESTING_MODE, ROW_OVERLAP
 from steps.video_camera_motion import VideoMotion
 
 
@@ -52,6 +52,8 @@ class ImageRowStitcher:
         pattern = rf"^{re.escape(os.path.splitext(self.video_name)[0])}.*-oio-.\.png$"
         for filename in [file for file in os.listdir(self.output_path) if re.match(pattern, file)]:
             self.imageRows.append(iio.imread(os.path.join(self.output_path, filename)))
+        if not self.motions.isMovingDown():
+            self.imageRows.reverse()
         print(f"Loaded {len(self.imageRows)} row images\n")
 
     def alighHeight(self):
@@ -162,10 +164,10 @@ class ImageRowStitcher:
             "scan_shift": int(self.motions.getAverageVerticalShift()),
         }
 
-        if self.motions.getDirection() == 'CCW':
-            self.physics["roll"] = int(np.round(self.imageRows[0].shape[1] * 0.05))
+        if self.motions.getDirection() == 'CCW' or not self.motions.isMovingDown():
+            self.physics["roll"] = int(np.round(self.imageRows[0].shape[1] * (ROW_OVERLAP-1))) + 36
         else:
-            self.physics["roll"] = -int(np.round(self.imageRows[0].shape[1] * 0.05))
+            self.physics["roll"] = -int(np.round(self.imageRows[0].shape[1] * (ROW_OVERLAP-1))) + 36
 
         self.physics["first_frame"] = (self.physics["scan_shift"] + SEARCH_SPACE_SIZE[1],
                                        abs(self.physics["roll"]) + SEARCH_SPACE_SIZE[0])
@@ -227,6 +229,12 @@ class ImageRowStitcher:
         real_shift = [0]
         for image, shift in tqdm(zip(self.rolledImageRows[1:], np.cumsum(self.per_row_shift[:, 0])),
                                  total=self.per_row_shift.shape[0], desc="Stitching image"):
+            if TESTING_MODE:
+                image[0, :] = 0
+                image[-1, :] = 0
+                image[:, 0] = 0
+                image[:, -1] = 0
+
             interp = RegularGridInterpolator(
                 (np.arange(image.shape[0]), np.arange(image.shape[1])),
                 image
@@ -238,9 +246,16 @@ class ImageRowStitcher:
             real_shift.append(int(shift // 1))
 
         out_height = self.rolledImageRows[0].shape[0] + np.max(real_shift)
+        if TESTING_MODE:
+            full_image = np.zeros((out_height, self.rolledImageRows[0].shape[1]))
+            for image, r_shift in zip(to_grid, real_shift):
+                full_image[r_shift: r_shift + image.shape[0], :] = image
+            self.blended_full_image = full_image
+            return
         full_image = np.zeros((out_height, self.rolledImageRows[0].shape[1], len(self.rolledImageRows)))
         for en, (image, r_shift) in enumerate(zip(to_grid, real_shift)):
             full_image[r_shift: r_shift + image.shape[0], :, en] = image
+
 
         blend_matrix = np.zeros((out_height, to_grid[0].shape[1], len(to_grid)))
 
@@ -266,4 +281,3 @@ class ImageRowStitcher:
         blend_matrix[to_grid[en + 1].shape[0] + real_shift[en + 1]:, :, -1] += 1
 
         self.blended_full_image = np.sum(full_image * blend_matrix, axis=2) / np.sum(blend_matrix, axis=2)
-
