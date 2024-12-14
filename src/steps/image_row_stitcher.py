@@ -10,7 +10,7 @@ from scipy.interpolate import RegularGridInterpolator
 from scipy.optimize import minimize
 from tqdm.auto import tqdm
 
-from config import SEARCH_SPACE_SIZE, TESTING_MODE, ROW_OVERLAP
+from config import SEARCH_SPACE_SIZE, TESTING_MODE, ROW_OVERLAP, XTOL, FTOL
 from steps.video_camera_motion import VideoMotion
 
 
@@ -194,7 +194,7 @@ class ImageRowStitcher:
             result = minimize(self.to_minimize, x0=np.array([0, 0]), method='Powell',
                               bounds=[(-SEARCH_SPACE_SIZE[1], +SEARCH_SPACE_SIZE[1]),
                                       (-SEARCH_SPACE_SIZE[0], SEARCH_SPACE_SIZE[0])],
-                              options={'xtol': 1e-2, 'ftol': 1e-2})
+                              options={'xtol': XTOL, 'ftol': FTOL})
             shift_fixes.append(result.x)
 
         self.per_row_shift = np.array([seed[0, :] - seed[1, :] - fix for seed, fix in zip(shift_seeds, shift_fixes)])

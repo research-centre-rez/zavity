@@ -10,7 +10,7 @@ from scipy.optimize import curve_fit
 from scipy.signal import find_peaks
 from tqdm.auto import tqdm
 
-from config import BLENDED_PIXELS_PER_FRAME, BLENDED_PIXELS_SHIFT, SINUSOID_SAMPLING
+from config import TESTING_MODE, BLENDED_PIXELS_PER_FRAME, BLENDED_PIXELS_SHIFT, SINUSOID_SAMPLING, IMAGE_REPEATS
 
 
 def calculateMovements(images, moving_down):
@@ -21,6 +21,8 @@ def calculateMovements(images, moving_down):
             image = image[image.shape[0] // 4:, :]
         elif not moving_down and i == len(images) - 1:
             image = image[image.shape[0] // 4:, :]
+
+        image = np.hstack((image,) * IMAGE_REPEATS)
 
         # print(image.shape)
         stripe_width = 100
@@ -82,18 +84,26 @@ def calculateMovements(images, moving_down):
     return movementses
 
 
-def detrendMovements(movementses):
+def detrendMovements(movementses, output_path, video_file_path):
     detrended_movementses = []
-    for movements in movementses:
-        # Generate x-values corresponding to movement indices
-        x = np.arange(0, len(movements) * SINUSOID_SAMPLING, SINUSOID_SAMPLING)
-
-
-
-        # Linear regression to remove rotation
-        coefficients = np.polyfit(x, movements, deg=5)
+    for i, movements in enumerate(movementses):
+        x = np.arange(len(movements))
+        coefficients = np.polyfit(x, movements, deg=1)
         linear_trend = np.polyval(coefficients[-2:], x)
         detrended_movementses.append(movements - linear_trend)
+
+        if TESTING_MODE:
+            # Plot to visualize detrending
+            plt.figure(figsize=(10, 5))
+            plt.plot(x, movements, label="Original Data")
+            plt.plot(x, linear_trend, label="Fitted Line (Trend)")
+            plt.plot(x, movements - linear_trend, label="Detrended Data")
+            plt.legend()
+            plt.xlabel("Stripe Index")
+            plt.ylabel("Movement")
+            plt.title("Detrending the Cumulative Movement")
+            plt.grid(True)
+            plt.savefig(os.path.join(output_path, f"{os.path.splitext(video_file_path)[0]}_oio_{i}_detrend" + ".png"))
 
     return detrended_movementses
 
@@ -109,40 +119,43 @@ def rotated_sinusoid(x, A, B, C, D, theta):
     return y_rot
 
 
-def fitSin(movementses):
-    theta_inits = []
-    for movements in movementses:
-        x = np.arange(len(movements))
-        coefficients = np.polyfit(x, movements, deg=1)
-        theta_initial = np.arctan(coefficients[-2])
-        theta_inits.append(theta_initial)
-
-    # print(theta_inits)
-    theta_initial = np.median(theta_inits)
+def fitSin(movementses, output_path, video_file_path):
     paramses = []
-    for theta_init, movements in zip(theta_inits, movementses):
+    for i, movements in enumerate(movementses):
+        x = np.arange(len(movements))
+        max_m = np.max(movements)
+        min_m = np.min(movements)
+        freq = 2 * IMAGE_REPEATS * np.pi / len(movements)
 
-        initial_guesses = [np.max(movements), 2 * np.pi / len(movements), 0, 0, theta_init]
+        custom_rotated_sinusoid = lambda x, A, C, D, theta: rotated_sinusoid(x, A, freq, C, D, theta)
 
-        lower_bounds = [0, 2 * np.pi / len(movements), -np.pi, -100, theta_initial - 0.1]
-        upper_bounds = [np.inf, 2 * np.pi, np.pi, 100, theta_initial + 0.1]
+        # Initial guess for parameters: [Amplitude, Frequency, Phase, Vertical shift, Rotation]
+        initial_guesses = [(max_m - min_m) / 2, 0, 0, 0]
+
+        lower_bounds = [0, -np.pi, -100, -0.1]  # Set lower bounds
+        upper_bounds = [max(max_m, -min_m), np.pi, +100, 0.1]  # Set upper bounds
 
         # Fit the model
-        params, _ = curve_fit(rotated_sinusoid, x, movements, p0=initial_guesses,
+        params, _ = curve_fit(custom_rotated_sinusoid, x, movements, p0=initial_guesses,
                               bounds=(lower_bounds, upper_bounds), method='trf', maxfev=5000)
+        A, C, D, theta = params
+        params = A, freq, C, D, theta
+        if TESTING_MODE:
+            # Extract fitted parameters
+            # print(f"Amplitude: {A}, Frequency: {freq}, Phase: {C}, Vertical Shift: {D}, Theta: {theta}")
 
-        # Generate fitted rotated sinusoid
-        # fitted_rotated_sinusoid = rotated_sinusoid(x, *params)
-        # Plot the results
-        # plt.figure(figsize=(10, 5))
-        # plt.plot(x, movements, label="Cumulative Movements")
-        # plt.plot(x, fitted_rotated_sinusoid, label="Fitted Rotated Sinusoid", linestyle="--")
-        # plt.legend()
-        # plt.xlabel("Stripe Index")
-        # plt.ylabel("Movement")
-        # plt.title("Fitting Rotated Sinusoidal Model to Cumulative Movements")
-        # plt.grid(True)
-        # plt.savefig(os.path.join(output_path, f"{video_file_path}_fitsin" + ".png"))
+            # Generate fitted rotated sinusoid
+            fitted_rotated_sinusoid = rotated_sinusoid(x, A, freq, C, D, theta)
+            # Plot the results
+            plt.figure(figsize=(10, 5))
+            plt.plot(x, movements, label="Cumulative Movements")
+            plt.plot(x, fitted_rotated_sinusoid, label="Fitted Rotated Sinusoid", linestyle="--")
+            plt.legend()
+            plt.xlabel("Stripe Index")
+            plt.ylabel("Movement")
+            plt.title("Fitting Rotated Sinusoidal Model to Cumulative Movements")
+            plt.grid(True)
+            plt.savefig(os.path.join(output_path, f"{os.path.splitext(video_file_path)[0]}_oio_{i}_fitsin" + ".png"))
 
         paramses.append(params)
 
@@ -183,14 +196,16 @@ def remove_sinusoidal_transformation(images, paramses):
     return rows
 
 
-def removeSinTransform(rows, moving_down):
-    movementses = calculateMovements(rows, moving_down)
-    # movementses = detrendMovements(movementses)
-    params = fitSin(movementses)
-    # print(params)
-    rows = remove_sinusoidal_transformation(rows, params)
+def removeSinTransform(rows, moving_down, output_path, video_file_path):
+    if rows:
+        movementses = calculateMovements(rows, moving_down)
+        movementses = detrendMovements(movementses, output_path, video_file_path)
+        params = fitSin(movementses, output_path, video_file_path)
+        print(f"\nParameters for sinusoidal transformation:\n{params}\n")
+        rows = remove_sinusoidal_transformation(rows, params)
 
     return rows
+
 
 
 def construct_rows(motions, preprocessor, video_file_path, output_path):
@@ -206,11 +221,9 @@ def construct_rows(motions, preprocessor, video_file_path, output_path):
             row = construct_row(vidcap, int(start), int(end), direction=motions.getDirection(),
                                 rotation=motions.isPortrait(), shift_per_frame=motions.getHorizontalSpeed(),
                                 frames_per_360_deg=motions.getFramesPer360())
-        else:
-            row = iio.imread(file_path)
-        rows.append(row)
+            rows.append(row)
 
-    rows = removeSinTransform(rows, motions.isMovingDown())
+    rows = removeSinTransform(rows, motions.isMovingDown(), output_path, video_file_path)
 
     for i, row in enumerate(rows):
         file_path = os.path.join(output_path, os.path.splitext(os.path.basename(video_file_path))[0] + f"-oio-{i}.png")

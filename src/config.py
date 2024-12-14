@@ -31,14 +31,17 @@ INTERVAL_FILTER_TH = 0.25
 
 # VideoMotion config
 FPS_REDUCTION = 1
-RESOLUTION_DECS = 6
+RESOLUTION_DECS = 4
 ROW_OVERLAP = 1.0595
 
 # RowBuilder config
 BLENDED_PIXELS_PER_FRAME = 10  # number of pixels taken from one image (volatile, must be greater than SHIFT_PER_FRAME)
 BLENDED_PIXELS_SHIFT = 0  # number of pixels to shift area taken from one image
 SINUSOID_SAMPLING = 10
+IMAGE_REPEATS = 10
 
 # RowStitcher config
-SEARCH_SPACE_SIZE = (30, 50) # of shift correction between pairs of row images
-TESTING_MODE = True
+SEARCH_SPACE_SIZE = (22, 16) # of shift correction between pairs of row images (roll, shift)
+TESTING_MODE = True # replaces border pixels of rows with 0s and does not blend
+XTOL = 1e-1
+FTOL = 1e-3
