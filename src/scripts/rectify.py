@@ -158,7 +158,10 @@ def find_point_pairs(cap, frame_no_range=None):
         frame_no_range = (0, cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
     cap.set(cv2.CAP_PROP_POS_FRAMES, frame_no_range[0])
-    frame_nos = np.arange(frame_no_range[0], frame_no_range[1])
+    # TODO: this is black magic and should be moved into configuration
+    np.random.seed(1234)
+    frame_nos = np.random.randint(frame_no_range[0], frame_no_range[1], 100)
+    # frame_nos = np.arange(frame_no_range[0], frame_no_range[1] / 5, 20)
 
     point_pairs_list = []
     for frame_no in tqdm(frame_nos, desc="Looking for corners"):
@@ -302,7 +305,7 @@ def convert_video(video_file_path, calib_params, output_file_path):
                               1,  # True
                           ])
 
-    for _ in tqdm(np.arange(100), desc="Frame rectification"):
+    for _ in tqdm(np.arange(frame_count), desc="Frame rectification"):
         success, frame = vidcap.read()
         if not success:
             logger.error(f"Could not read from the videofile {video_file_path}")
@@ -386,7 +389,7 @@ if __name__ == "__main__":
         if args.checkerboard_input_video_path is not None:
             checkerboard_cap = cv2.VideoCapture(args.checkerboard_input_video_path)
             point_pairs_list = find_point_pairs(checkerboard_cap)
-            subpix_corners_list = subpix_corners(args.output_path, point_pairs_list, disable_plot=args.verbose)
+            subpix_corners_list = subpix_corners(args.output_path, point_pairs_list, disable_plot=not args.verbose)
             if args.verbose:
                 print_corner_count_histogram(point_pairs_list)
 
