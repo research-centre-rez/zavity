@@ -10,7 +10,7 @@ from scipy.interpolate import RegularGridInterpolator
 from scipy.optimize import minimize
 from tqdm.auto import tqdm
 
-from config import SEARCH_SPACE_SIZE, TESTING_MODE, ROW_OVERLAP, XTOL, FTOL
+from config.config import SEARCH_SPACE_SIZE, TESTING_MODE, ROW_OVERLAP, XTOL, FTOL
 from steps.video_camera_motion import VideoMotion
 
 

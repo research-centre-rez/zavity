@@ -1,8 +1,8 @@
 .git
-venv
+.venv
 __pycache__
 devernay_1.0/
-src/config.py
+src/config/config.py
 *.pyc
 *.pyo
 *.pyd

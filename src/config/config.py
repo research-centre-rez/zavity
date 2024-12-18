@@ -11,17 +11,17 @@ INPUT_FOLDER = os.path.join(PROJECT_DIR, 'input')  # Input folder at the same le
 # VideoPreprocessor config
 EVERY_NTH_FRAME = 28  # min(2*14x+21529/x) min(2*(num_of_border_breakpoints+1)*x+total_frames/x)
 # window coordinates
-Y1 = 550 #700    # Y1-PADDING cant be lower then 0
-Y2 = 1850 #1900   # Y2+PADDING cant be bigger then 2160
-X1 = 1350 #1500   # X1-PADDING cant be lower then 0
-X2 = 2650 #2700   # X2+PADDING cant be bigger then 3840
-PADDING = 300
+Y1 = 500 #700    # Y1-PADDING cant be lower then 0
+Y2 = 1800 #1900   # Y2+PADDING cant be bigger then 2160
+X1 = 1300 #1500   # X1-PADDING cant be lower then 0
+X2 = 2600 #2700   # X2+PADDING cant be bigger then 3840
+PADDING = 350
 DEVERNAY_DOWNSCALE = 4
 SAMPLES = 1000
 SIGMA = 3 # to denoise histogram of angles with gaussian
 SEGMENT_TYPE_THRESHOLD=0.04
 ROT_PER_FRAME = 0.12734272843513264
-RECTIFY = False
+RECTIFY = True
 CODEC = 'mp4v' # 'MJPG'
 EXT = '.mp4' # '.avi'
 BORDER_BPS = None # For testing purposes [[0, 46], [3034, 3164]]

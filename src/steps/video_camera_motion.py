@@ -7,7 +7,7 @@ import pandas as pd
 from scipy.stats import stats
 from tqdm.auto import tqdm
 
-from config import FPS_REDUCTION, RESOLUTION_DECS, ROW_OVERLAP
+from config.config import FPS_REDUCTION, RESOLUTION_DECS, ROW_OVERLAP
 from steps.video_preprocessor import VideoPreprocessor
 
 

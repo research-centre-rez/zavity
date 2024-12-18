@@ -10,7 +10,7 @@ from scipy.optimize import curve_fit
 from scipy.signal import find_peaks
 from tqdm.auto import tqdm
 
-from config import TESTING_MODE, BLENDED_PIXELS_PER_FRAME, BLENDED_PIXELS_SHIFT, SINUSOID_SAMPLING, IMAGE_REPEATS
+from config.config import TESTING_MODE, BLENDED_PIXELS_PER_FRAME, BLENDED_PIXELS_SHIFT, SINUSOID_SAMPLING, IMAGE_REPEATS
 
 
 def calculateMovements(images, moving_down):

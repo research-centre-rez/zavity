@@ -11,10 +11,10 @@ docker build -t oio-pipeline .
 To run the application using Docker, you need to specify the config file path and input and output directories. Use the `-v` flag to bind your local paths.
 Examples:
 ```bash
-docker run -v /path/to/input:/input -v /path/to/output:/output -v /path/to/config/config.py:/app/src/config.py oio-pipeline --mode multiple
+docker run -v /path/to/input:/input -v /path/to/output:/output -v /path/to/config/config.py:/app/src/config/config.py oio-pipeline --mode multiple
 ```
 ```bash
-docker run -v /path/to/input:/input -v /path/to/output:/output -v /path/to/config/config.py:/app/src/config.py oio-pipeline --mode single --path_to_video '/input/GX010009_cely zavit clona nahoru.MP4'
+docker run -v /path/to/input:/input -v /path/to/output:/output -v /path/to/config/config.py:/app/src/config/config.py oio-pipeline --mode single --path_to_video '/input/GX010009_cely zavit clona nahoru.MP4'
 ```
 
 ## Main Method Arguments

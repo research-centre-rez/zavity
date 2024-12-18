@@ -1,5 +1,6 @@
 import os
 import subprocess
+import sys
 import tempfile
 from typing import LiteralString
 
@@ -12,8 +13,8 @@ from scipy.ndimage import gaussian_filter1d
 from scipy.signal import savgol_filter
 from tqdm.auto import tqdm
 
-from config import (Y1, Y2, X1, X2, SAMPLES, EVERY_NTH_FRAME, ROT_PER_FRAME, SIGMA, PADDING, CODEC, EXT, BORDER_BPS,
-                    REFINED_BP, RECTIFY, INTERVAL_FILTER_TH, DEVERNAY_DOWNSCALE, SEGMENT_TYPE_THRESHOLD)
+from config.config import (Y1, Y2, X1, X2, SAMPLES, EVERY_NTH_FRAME, ROT_PER_FRAME, SIGMA, PADDING, CODEC, EXT, BORDER_BPS,
+                           REFINED_BP, RECTIFY, INTERVAL_FILTER_TH, DEVERNAY_DOWNSCALE, SEGMENT_TYPE_THRESHOLD)
 
 
 class VideoPreprocessor:
@@ -51,11 +52,13 @@ class VideoPreprocessor:
             output_path (str): Directory where output files will be saved.
             calc_rot_per_frame (bool): Whether to calculate rotation per frame.
         """
-        self.video_name = os.path.basename(video_path)
+        self.video_path = video_path
+        self.video_name = os.path.basename(self.video_path)
         self.output_path = output_path
         self.output_video_file_path = os.path.join(output_path,
                                                    os.path.splitext(self.video_name)[0] + '_preprocessed' + EXT)
-        self.video_capture = cv2.VideoCapture(video_path)
+        self.rectified_video_file_path = os.path.join(output_path,
+                                                   os.path.splitext(self.video_name)[0] + '-rectified' + EXT)
         self.angles = []
         self.borderBreakpoints = []
         self.calc_rot_per_frame = calc_rot_per_frame
@@ -100,6 +103,15 @@ class VideoPreprocessor:
         """
         Loads or computes angles, breakpoints, and rotation data for the video.
         """
+        if RECTIFY:
+            if os.path.isfile(self.rectified_video_file_path):
+                self.video_capture = cv2.VideoCapture(self.rectified_video_file_path)
+            else:
+                self.rectify_video()
+                self.video_capture = cv2.VideoCapture(self.rectified_video_file_path)
+        else:
+            self.video_capture = cv2.VideoCapture(self.video_path)
+
         if self.calc_rot_per_frame:
             if os.path.isfile(self._dump_path('full_angles')):
                 angles = np.load(self._dump_path('full_angles'))
@@ -460,7 +472,7 @@ class VideoPreprocessor:
         """
         angles = self.compute_angles(bp - EVERY_NTH_FRAME, bp + EVERY_NTH_FRAME, 1)
         breakpoints, segment_type = self.compute_breakpoints(angles, step=1, merge_threshold=1,
-                                                             segment_type_return=True)
+                                                             segment_type_return=True, filter_length=8)
         if len(breakpoints) == 3:
             refined_bp = breakpoints[1]
         elif len(breakpoints) > 3:
@@ -472,9 +484,9 @@ class VideoPreprocessor:
         else:
             print(f"No breakpoints found: {breakpoints}")
             return bp
-        refined_bp = bp - EVERY_NTH_FRAME + refined_bp
+        refined_bp = int(bp - EVERY_NTH_FRAME + refined_bp)
         print(f"Breakpoint refinement: {bp} -> {refined_bp}")
-        return int(bp - EVERY_NTH_FRAME + refined_bp)
+        return refined_bp
 
     @staticmethod
     def get_zero_segment(breakpoints, segment_type):
@@ -590,13 +602,6 @@ class VideoPreprocessor:
 
         for i in tqdm(range(total_frames), desc="PreProcessing frames"):
             success, frame = self.video_capture.read()
-            if RECTIFY:
-                h, w = frame.shape[:2]
-                # print(os.listdir())
-                mtx = np.load("src/mtx.npy")
-                dist = np.load("src/dist.npy")
-                new_camera_mtx, roi = cv2.getOptimalNewCameraMatrix(mtx, dist, (w, h), 1, (w, h))
-                frame = cv2.undistort(frame, mtx, dist, None, new_camera_mtx)
             frame = frame[Y1 - PADDING:Y2 + PADDING, X1 - PADDING:X2 + PADDING]
             rotate_matrix = cv2.getRotationMatrix2D((frame.shape[1] / 2, frame.shape[0] / 2), angle, 1)
             rotated_image = cv2.warpAffine(
@@ -685,3 +690,61 @@ class VideoPreprocessor:
             inverted.pop(-1)
 
         return inverted
+
+
+    def rectify_video(self):
+        """
+        Calls the `rectify.py` script via a subprocess to rectify the video at `self.video_path`.
+
+        This method ensures that the rectified video is stored in the output directory specified
+        by `self.output_path` with the rectified suffix in its filename.
+        """
+        try:
+            # Construct the subprocess command
+            command = [
+                "python", "src/scripts/rectify.py",
+                "--input-video-path", self.video_path,
+                "--output-path", self.output_path,
+                "--calibration-config-dir", "src/config/"
+            ]
+
+            print(f"Running rectification with command: {' '.join(command)}")
+
+            # Use Popen to stream real-time output
+            process = subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1  # Line-buffered
+            )
+
+            # Process stdout and stderr in real time
+            while True:
+                output = process.stdout.readline()
+                error = process.stderr.readline()
+
+                # Handle stdout (normal logs)
+                if output:
+                    sys.stdout.write(output)
+                    sys.stdout.flush()
+
+                # Handle stderr (tqdm progress bar)
+                if error:
+                    sys.stderr.write(error)
+                    sys.stderr.flush()
+
+                # Break when the process is done and no more output
+                if output == "" and error == "" and process.poll() is not None:
+                    break
+
+            # Check return code
+            if process.returncode != 0:
+                raise RuntimeError(
+                    f"Rectification failed with return code {process.returncode}. Check the output above.")
+
+            print(f"Rectification completed successfully. Rectified video saved at {self.rectified_video_file_path}")
+
+        except Exception as e:
+            print(f"An error occurred while rectifying the video: {e}")
+            raise

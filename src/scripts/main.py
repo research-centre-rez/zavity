@@ -6,7 +6,7 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 src_dir = os.path.join(current_dir, "..")
 sys.path.append(src_dir)
 
-from config import OUTPUT_FOLDER, INPUT_FOLDER
+from config.config import OUTPUT_FOLDER, INPUT_FOLDER
 from steps.image_row_builder import construct_rows
 from steps.image_row_stitcher import ImageRowStitcher
 from steps.video_camera_motion import VideoMotion
