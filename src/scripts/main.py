@@ -42,7 +42,7 @@ def process_video(video_path, output_path, calc_rot_per_frame):
         with timing("Preprocessor"):
             preprocessor = VideoPreprocessor(video_path, output_path, calc_rot_per_frame)
             preprocessor.process()
-            video_file_path = preprocessor.getOutputVideoFilePath()
+            video_file_path = preprocessor.get_output_video_file_path()
 
         with timing("VideoMotion"):
             motions = VideoMotion(video_file_path, output_path, preprocessor)

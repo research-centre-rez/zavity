@@ -212,18 +212,18 @@ def construct_rows(motions, preprocessor, video_file_path, output_path):
     print(f"Processing RowBuilder for: {video_file_path}\n")
     vidcap = cv2.VideoCapture(video_file_path)
     rows = []
-    for i, interval in enumerate(preprocessor.getIntervals()):
+    for i, interval in enumerate(preprocessor.get_intervals()):
         mn, mx = interval
-        start = mn + (mx - mn) // 2 - motions.getFramesPer360() // 2
-        end = start + motions.getFramesPer360()
+        start = mn + (mx - mn) // 2 - motions.get_frames_per360() // 2
+        end = start + motions.get_frames_per360()
         file_path = os.path.join(output_path, os.path.splitext(os.path.basename(video_file_path))[0] + f"-oio-{i}.png")
         if not os.path.isfile(file_path):
-            row = construct_row(vidcap, int(start), int(end), direction=motions.getDirection(),
-                                rotation=motions.isPortrait(), shift_per_frame=motions.getHorizontalSpeed(),
-                                frames_per_360_deg=motions.getFramesPer360())
+            row = construct_row(vidcap, int(start), int(end), direction=motions.get_direction(),
+                                rotation=motions.is_portrait(), shift_per_frame=motions.get_horizontal_speed(),
+                                frames_per_360_deg=motions.get_frames_per360())
             rows.append(row)
 
-    rows = removeSinTransform(rows, motions.isMovingDown(), output_path, video_file_path)
+    rows = removeSinTransform(rows, motions.is_moving_down(), output_path, video_file_path)
 
     for i, row in enumerate(rows):
         file_path = os.path.join(output_path, os.path.splitext(os.path.basename(video_file_path))[0] + f"-oio-{i}.png")

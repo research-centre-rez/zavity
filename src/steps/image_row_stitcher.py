@@ -52,7 +52,7 @@ class ImageRowStitcher:
         pattern = rf"^{re.escape(os.path.splitext(self.video_name)[0])}.*-oio-.\.png$"
         for filename in [file for file in os.listdir(self.output_path) if re.match(pattern, file)]:
             self.imageRows.append(iio.imread(os.path.join(self.output_path, filename)))
-        if not self.motions.isMovingDown():
+        if not self.motions.is_moving_down():
             self.imageRows.reverse()
         print(f"Loaded {len(self.imageRows)} row images\n")
 
@@ -161,10 +161,10 @@ class ImageRowStitcher:
 
     def computePositions(self):
         self.physics = {
-            "scan_shift": int(self.motions.getAverageVerticalShift()),
+            "scan_shift": int(self.motions.get_average_vertical_shift()),
         }
 
-        if self.motions.getDirection() == 'CCW' or not self.motions.isMovingDown():
+        if self.motions.get_direction() == 'CCW' or not self.motions.is_moving_down():
             self.physics["roll"] = int(np.round(self.imageRows[0].shape[1] * (ROW_OVERLAP-1))) + 36
         else:
             self.physics["roll"] = -int(np.round(self.imageRows[0].shape[1] * (ROW_OVERLAP-1))) + 36
