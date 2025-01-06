@@ -14,7 +14,8 @@ from scipy.signal import savgol_filter
 from tqdm.auto import tqdm
 
 from config.config import (Y1, Y2, X1, X2, SAMPLES, EVERY_NTH_FRAME, ROT_PER_FRAME, SIGMA, PADDING, CODEC, EXT, BORDER_BPS,
-                           REFINED_BP, RECTIFY, INTERVAL_FILTER_TH, DEVERNAY_DOWNSCALE, SEGMENT_TYPE_THRESHOLD)
+                           REFINED_BP, RECTIFY, INTERVAL_FILTER_TH, DEVERNAY_DOWNSCALE, SEGMENT_TYPE_THRESHOLD,
+                           REMOVE_ROTATION)
 
 
 class VideoPreprocessor:
@@ -26,7 +27,7 @@ class VideoPreprocessor:
         video_name (str): Name of the input video file.
         output_video_file_path (str): Path to the output processed video file.
         video_capture (cv2.VideoCapture): Video capture object for reading frames.
-        angles (list): List of computed angles for each frame.
+        angles (np.ndarray): List of computed angles for each frame.
         borderBreakpoints (list): List of border breakpoints derived from the video.
         calc_rot_per_frame (bool): Flag indicating whether to calculate rotation per frame.
         rotation_per_frame (float): Calculated rotation per frame.
@@ -36,7 +37,7 @@ class VideoPreprocessor:
     video_name: str
     output_video_file_path: LiteralString | str | bytes
     video_capture: cv2.VideoCapture
-    angles: list
+    angles: np.ndarray
     borderBreakpoints: list
     calc_rot_per_frame: bool
     rotation_per_frame: float
@@ -53,13 +54,13 @@ class VideoPreprocessor:
             calc_rot_per_frame (bool): Whether to calculate rotation per frame.
         """
         self.video_path = video_path
+        self.video_capture = cv2.VideoCapture(self.video_path)
         self.video_name = os.path.basename(self.video_path)
         self.output_path = output_path
         self.output_video_file_path = os.path.join(output_path,
                                                    os.path.splitext(self.video_name)[0] + '_preprocessed' + EXT)
         self.rectified_video_file_path = os.path.join(output_path,
                                                    os.path.splitext(self.video_name)[0] + '-rectified' + EXT)
-        self.angles = []
         self.borderBreakpoints = []
         self.calc_rot_per_frame = calc_rot_per_frame
 
@@ -68,13 +69,16 @@ class VideoPreprocessor:
         Processes the video, either loading precomputed data or performing computations
         for angles, breakpoints, and rotation corrections.
         """
-        if os.path.isfile(self.get_output_video_file_path()) and os.path.isfile(self._dump_path("borderBreakpoints")):
-            self.borderBreakpoints = np.load(self._dump_path("borderBreakpoints"))
-            print(f"Loaded {self._dump_path('borderBreakpoints')}\n"
-                  f"{self.borderBreakpoints}\n")
+        if REMOVE_ROTATION:
+            if os.path.isfile(self.get_output_video_file_path()) and os.path.isfile(self._dump_path("borderBreakpoints")):
+                self.borderBreakpoints = np.load(self._dump_path("borderBreakpoints"))
+                print(f"Loaded {self._dump_path('borderBreakpoints')}\n"
+                      f"{self.borderBreakpoints}\n")
+            else:
+                print(f"Pre-processing video: {self.video_name}")
+                self.load_or_compute()
         else:
-            print(f"Pre-processing video: {self.video_name}")
-            self.load_or_compute()
+            self.output_video_file_path = self.video_path
 
     def _dump_path(self, object_name, extension='npy'):
         """
@@ -109,8 +113,6 @@ class VideoPreprocessor:
             else:
                 self.rectify_video()
                 self.video_capture = cv2.VideoCapture(self.rectified_video_file_path)
-        else:
-            self.video_capture = cv2.VideoCapture(self.video_path)
 
         if self.calc_rot_per_frame:
             if os.path.isfile(self._dump_path('full_angles')):
@@ -119,8 +121,8 @@ class VideoPreprocessor:
                 angles = self.compute_angles(step=1)
                 self.dump('full_angles', angles)
             breakpoints = self.compute_breakpoints(angles, filter_length=8, step=1, merge_threshold=10)
-            self.plot_angles(angles, breakpoints)
             border_breakpoints = self.compute_border_breakpoints(breakpoints, 1)
+            self.plot_angles(angles, breakpoints=breakpoints, border_breakpoints=border_breakpoints)
             self.rotation_per_frame = self.compute_rotation_per_frame(angles, breakpoints, border_breakpoints)
             print(f"Calculated rotation per frame\n"
                   f"{self.rotation_per_frame}\n"
@@ -204,7 +206,7 @@ class VideoPreprocessor:
             step (int): Step size for frame iteration.
 
         Returns:
-            list: Computed angles for each frame.
+            np.ndarray: Computed angles for each frame.
         """
         computed_angles = []
         if end is None:
@@ -279,7 +281,7 @@ class VideoPreprocessor:
                 computed_angles.append(angle)
 
         print(f"Angles calculated from {start} to {end} with step {step}\n")
-        return computed_angles
+        return np.array(computed_angles)
 
     @staticmethod
     def compute_angle(hist):
@@ -304,7 +306,7 @@ class VideoPreprocessor:
         Computes breakpoints in the angle data.
 
         Args:
-            angles (list): List of angle values. Defaults to self.angles.
+            angles (np.ndarray): List of angle values. Defaults to self.angles.
             filter_length (int): Filter size for smoothing the angles. Defaults to -1 (no filter).
             step (int): Step size for computation.
             threshold (float): Threshold for detecting changes in segments.
@@ -626,8 +628,8 @@ class VideoPreprocessor:
         Plots angles and optionally marks breakpoints and border breakpoints.
 
         Args:
-            angles (list): List of angles to plot.
-            breakpoints (list, optional): List of breakpoints to mark on the plot.
+            angles (np.ndarray): List of angles to plot.
+            breakpoints (np.ndarray, optional): List of breakpoints to mark on the plot.
             border_breakpoints (list, optional): List of border breakpoints to mark.
             step (int, optional): Step size for angle computation. Defaults to 1.
         """

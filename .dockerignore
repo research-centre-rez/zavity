@@ -1,7 +1,7 @@
 .git
 .venv
 __pycache__
-devernay_1.0/
+notebooks/.ipynb_checkpoints
 src/config/config.py
 *.pyc
 *.pyo

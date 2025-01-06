@@ -45,11 +45,11 @@ def process_video(video_path, output_path, calc_rot_per_frame):
             video_file_path = preprocessor.get_output_video_file_path()
 
         with timing("VideoMotion"):
-            motions = VideoMotion(video_file_path, output_path, preprocessor)
+            motions = VideoMotion(video_file_path, output_path, preprocessor.get_intervals())
             motions.process()
 
         with timing("RowBuilder"):
-            construct_rows(motions, preprocessor, video_file_path, output_path)
+            construct_rows(motions, preprocessor.get_intervals(), video_file_path, output_path)
 
         with timing("RowStitcher"):
             stitcher = ImageRowStitcher(output_path, motions, video_path)

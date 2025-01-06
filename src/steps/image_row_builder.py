@@ -1,6 +1,5 @@
 import math
 import os
-
 import cv2
 import imageio.v3 as iio
 import numpy as np
@@ -13,7 +12,17 @@ from tqdm.auto import tqdm
 from config.config import TESTING_MODE, BLENDED_PIXELS_PER_FRAME, BLENDED_PIXELS_SHIFT, SINUSOID_SAMPLING, IMAGE_REPEATS
 
 
-def calculateMovements(images, moving_down):
+def calculate_movements(images, moving_down):
+    """
+    Calculates cumulative movements between columns from cumulative intensities from stripes from row image.
+
+    Args:
+        images (list[np.ndarray]): List of grayscale image frames.
+        moving_down (bool): Indicates the movement direction.
+
+    Returns:
+        list[np.ndarray]: List of cumulative movements for each image frame.
+    """
     movementses = []
     images = images.copy()
     for i, image in enumerate(images):
@@ -84,7 +93,18 @@ def calculateMovements(images, moving_down):
     return movementses
 
 
-def detrendMovements(movementses, output_path, video_file_path):
+def detrend_movements(movementses, output_path, video_file_path):
+    """
+    Removes linear trends from cumulative movements.
+
+    Args:
+        movementses (list[np.ndarray]): List of cumulative movements.
+        output_path (str): Directory to save debug plots.
+        video_file_path (str): Video file path for labeling outputs.
+
+    Returns:
+        list[np.ndarray]: List of detrended cumulative movements.
+    """
     detrended_movementses = []
     for i, movements in enumerate(movementses):
         x = np.arange(len(movements))
@@ -107,19 +127,52 @@ def detrendMovements(movementses, output_path, video_file_path):
 
     return detrended_movementses
 
-# Define the sinusoidal model
 def sinusoid(x, A, B, C, D):
+    """
+    Defines a sinusoidal function.
+
+    Args:
+        x (np.ndarray | float): Input values.
+        A (float): Amplitude.
+        B (float): Frequency.
+        C (float): Phase shift.
+        D (float): Vertical shift.
+
+    Returns:
+        np.ndarray | float: Sinusoidal output.
+    """
     return A * np.sin(B * x + C) + D
 
 def rotated_sinusoid(x, A, B, C, D, theta):
+    """
+    Rotates a sinusoidal function by a given angle.
+
+    Args:
+        x (np.ndarray | float): Input values.
+        A, B, C, D (float): Sinusoidal parameters.
+        theta (float): Rotation angle.
+
+    Returns:
+        np.ndarray | float: Rotated sinusoidal output.
+    """
     y = A * np.sin(B * x + C) + D
-    # Rotate the sinusoid using the angle theta
     x_rot = x * np.cos(theta) - y * np.sin(theta)
     y_rot = x * np.sin(theta) + y * np.cos(theta)
     return y_rot
 
 
 def fitSin(movementses, output_path, video_file_path):
+    """
+    Fits a rotated sinusoidal model to cumulative movements.
+
+    Args:
+        movementses (list[np.ndarray]): List of cumulative movements.
+        output_path (str): Directory to save debug plots.
+        video_file_path (str): Video file path for labeling outputs.
+
+    Returns:
+        np.ndarray: Fitted sinusoidal parameters.
+    """
     paramses = []
     for i, movements in enumerate(movementses):
         x = np.arange(len(movements))
@@ -163,6 +216,16 @@ def fitSin(movementses, output_path, video_file_path):
 
 
 def remove_sinusoidal_transformation(images, paramses):
+    """
+    Removes sinusoidal distortions from image rows.
+
+    Args:
+        images (list[np.ndarray]): List of image rows.
+        paramses (np.ndarray): Sinusoidal parameters for correction.
+
+    Returns:
+        list[np.ndarray]: Corrected image rows.
+    """
     rows = []
     # A, B, _, _, _ = np.median(paramses, axis=0)
     for image, params in zip(images, paramses):
@@ -196,10 +259,22 @@ def remove_sinusoidal_transformation(images, paramses):
     return rows
 
 
-def removeSinTransform(rows, moving_down, output_path, video_file_path):
+def remove_sin_transform(rows, moving_down, output_path, video_file_path):
+    """
+    Wrapper function to remove sinusoidal distortions.
+
+    Args:
+        rows (list[np.ndarray]): List of image rows.
+        moving_down (bool): Indicates downward movement.
+        output_path (str): Directory to save debug plots.
+        video_file_path (str): Video file path for labeling outputs.
+
+    Returns:
+        list[np.ndarray]: Corrected image rows.
+    """
     if rows:
-        movementses = calculateMovements(rows, moving_down)
-        movementses = detrendMovements(movementses, output_path, video_file_path)
+        movementses = calculate_movements(rows, moving_down)
+        movementses = detrend_movements(movementses, output_path, video_file_path)
         params = fitSin(movementses, output_path, video_file_path)
         print(f"\nParameters for sinusoidal transformation:\n{params}\n")
         rows = remove_sinusoidal_transformation(rows, params)
@@ -208,11 +283,23 @@ def removeSinTransform(rows, moving_down, output_path, video_file_path):
 
 
 
-def construct_rows(motions, preprocessor, video_file_path, output_path):
+def construct_rows(motions, intervals, video_file_path, output_path):
+    """
+    Constructs image rows by processing video frames.
+
+    Args:
+        motions (VideoMotion): VideoMotion instance for motion analysis.
+        intervals (list): Detected motion intervals.
+        video_file_path (str): Path to the video file.
+        output_path (str): Directory to save output rows.
+
+    Returns:
+        None
+    """
     print(f"Processing RowBuilder for: {video_file_path}\n")
     vidcap = cv2.VideoCapture(video_file_path)
     rows = []
-    for i, interval in enumerate(preprocessor.get_intervals()):
+    for i, interval in enumerate(intervals):
         mn, mx = interval
         start = mn + (mx - mn) // 2 - motions.get_frames_per360() // 2
         end = start + motions.get_frames_per360()
@@ -223,7 +310,7 @@ def construct_rows(motions, preprocessor, video_file_path, output_path):
                                 frames_per_360_deg=motions.get_frames_per360())
             rows.append(row)
 
-    rows = removeSinTransform(rows, motions.is_moving_down(), output_path, video_file_path)
+    rows = remove_sin_transform(rows, motions.is_moving_down(), output_path, video_file_path)
 
     for i, row in enumerate(rows):
         file_path = os.path.join(output_path, os.path.splitext(os.path.basename(video_file_path))[0] + f"-oio-{i}.png")
@@ -239,6 +326,23 @@ def construct_row(vidcap,
                   rotation: bool = False,
                   blended_pixels_per_frame=BLENDED_PIXELS_PER_FRAME,
                   blended_pixels_shift=BLENDED_PIXELS_SHIFT):
+    """
+    Constructs a single row image from video frames.
+
+    Args:
+        vidcap (cv2.VideoCapture): Video capture object.
+        start (int): Starting frame index.
+        end (int): Ending frame index.
+        shift_per_frame (float): Horizontal shift per frame.
+        frames_per_360_deg (int): Number of frames for a 360-degree rotation.
+        direction (str): Motion direction ("CCW" or "CW").
+        rotation (bool): Whether to rotate frames.
+        blended_pixels_per_frame (int): Pixels blended per frame.
+        blended_pixels_shift (int): Shift for blending.
+
+    Returns:
+        np.ndarray: Constructed row image.
+    """
     if not vidcap or end - start <= 0:
         raise IOError("Unsupported input data.")
 
