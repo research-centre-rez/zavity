@@ -13,9 +13,10 @@ from scipy.ndimage import gaussian_filter1d
 from scipy.signal import savgol_filter
 from tqdm.auto import tqdm
 
-from config.config import (Y1, Y2, X1, X2, SAMPLES, EVERY_NTH_FRAME, ROT_PER_FRAME, SIGMA, PADDING, CODEC, EXT, BORDER_BPS,
-                           REFINED_BP, RECTIFY, INTERVAL_FILTER_TH, DEVERNAY_DOWNSCALE, SEGMENT_TYPE_THRESHOLD,
-                           REMOVE_ROTATION)
+from config.config import (Y1, Y2, X1, X2, SAMPLES, EVERY_NTH_FRAME, ROT_PER_FRAME, SIGMA, PADDING, CODEC, EXT,
+                           BORDER_BPS, CALIBRATION_CONFIG_FILE_PATH, REFINED_BP, RECTIFY, INTERVAL_FILTER_TH,
+                           DEVERNAY_DOWNSCALE, SEGMENT_TYPE_THRESHOLD, REMOVE_ROTATION, VERBOSE)
+from steps.video_rectifier import _load_calibration_parameters
 
 
 class VideoPreprocessor:
@@ -59,10 +60,11 @@ class VideoPreprocessor:
         self.output_path = output_path
         self.output_video_file_path = os.path.join(output_path,
                                                    os.path.splitext(self.video_name)[0] + '_preprocessed' + EXT)
-        self.rectified_video_file_path = os.path.join(output_path,
-                                                   os.path.splitext(self.video_name)[0] + '-rectified' + EXT)
         self.borderBreakpoints = []
         self.calc_rot_per_frame = calc_rot_per_frame
+        self.calib_params = _load_calibration_parameters(CALIBRATION_CONFIG_FILE_PATH)
+        self.video_width = int(self.video_capture.get(cv2.CAP_PROP_FRAME_WIDTH))
+        self.video_height = int(self.video_capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
 
     def process(self):
         """
@@ -70,7 +72,8 @@ class VideoPreprocessor:
         for angles, breakpoints, and rotation corrections.
         """
         if REMOVE_ROTATION:
-            if os.path.isfile(self.get_output_video_file_path()) and os.path.isfile(self._dump_path("borderBreakpoints")):
+            if os.path.isfile(self.get_output_video_file_path()) and os.path.isfile(
+                    self._dump_path("borderBreakpoints")):
                 self.borderBreakpoints = np.load(self._dump_path("borderBreakpoints"))
                 print(f"Loaded {self._dump_path('borderBreakpoints')}\n"
                       f"{self.borderBreakpoints}\n")
@@ -78,7 +81,7 @@ class VideoPreprocessor:
                 print(f"Pre-processing video: {self.video_name}")
                 self.load_or_compute()
         else:
-            self.output_video_file_path = self.video_path
+            self.output_video_file_path = self.video_name
 
     def _dump_path(self, object_name, extension='npy'):
         """
@@ -107,13 +110,6 @@ class VideoPreprocessor:
         """
         Loads or computes angles, breakpoints, and rotation data for the video.
         """
-        if RECTIFY:
-            if os.path.isfile(self.rectified_video_file_path):
-                self.video_capture = cv2.VideoCapture(self.rectified_video_file_path)
-            else:
-                self.rectify_video()
-                self.video_capture = cv2.VideoCapture(self.rectified_video_file_path)
-
         if self.calc_rot_per_frame:
             if os.path.isfile(self._dump_path('full_angles')):
                 angles = np.load(self._dump_path('full_angles'))
@@ -143,7 +139,11 @@ class VideoPreprocessor:
                 self.angles = np.load(self._dump_path("angles"))
                 print(f"Loaded {self._dump_path('angles')}\n")
             else:
+                start_time = time.time()
                 self.angles = self.compute_angles()
+                time_angles = time.time() - start_time
+                if VERBOSE:
+                    print(f"Angles {time_angles:.4f}")
                 self.dump("angles", self.angles)
 
             if os.path.isfile(self._dump_path("breakpoints")) and os.path.isfile(self._dump_path("borderBreakpoints")):
@@ -154,21 +154,27 @@ class VideoPreprocessor:
                 print(f"Loaded {self._dump_path('breakpoints')}\n"
                       f"{self.breakpoints}\n")
             else:
+                start_time = time.time()
                 self.breakpoints = self.compute_breakpoints(self.angles, step=EVERY_NTH_FRAME)
+                time_bp = time.time() - start_time
                 self.dump("breakpoints", self.breakpoints)
+                start_time = time.time()
                 border_breakpoints = self.compute_border_breakpoints(self.breakpoints, EVERY_NTH_FRAME)
+                time_bbp = time.time() - start_time
+                start_time = time.time()
                 self.borderBreakpoints = self.refine_border_breakpoints(border_breakpoints, step=EVERY_NTH_FRAME)
+                time_refine_bbp = time.time() - start_time
                 self.dump("borderBreakpoints", self.borderBreakpoints)
 
-        self.compute()
-
-    def compute(self):
-        """
-        Executes computation tasks such as plotting angles and preprocessing the video.
-        """
-        self.plot_angles(self.angles, border_breakpoints=self.borderBreakpoints, breakpoints=self.breakpoints,
+        if VERBOSE:
+            print(f"Angles {time_angles:.4f}")
+            print(f"Breakpoints {time_bp:.4f}")
+            print(f"BorderBP {time_bbp:.4f}")
+            print(f"RefineBBP {time_refine_bbp:.4f}")
+            self.plot_angles(self.angles, border_breakpoints=self.borderBreakpoints, breakpoints=self.breakpoints,
                          step=EVERY_NTH_FRAME)
         self.preprocess_video()
+
 
     @staticmethod
     def unix_path_to_win_path(path):
@@ -567,6 +573,7 @@ class VideoPreprocessor:
         Applies preprocessing to the video, including cropping, rotating frames,
         and saving the processed output.
         """
+        self.video_capture = cv2.VideoCapture(self.video_path)
         i_row = 0
         if len(self.borderBreakpoints) >= 2:
             start, end = self.borderBreakpoints[i_row]
@@ -592,25 +599,49 @@ class VideoPreprocessor:
         out = cv2.VideoWriter(str(self.get_output_video_file_path()),
                               apiPreference=cv2.CAP_FFMPEG,
                               fourcc=cv2.VideoWriter_fourcc(*CODEC),
-                              fps=60.0,
+                              fps=self.video_capture.get(cv2.CAP_PROP_FPS),
                               frameSize=(X2 - X1, Y2 - Y1),
                               params=[
                                   cv2.VIDEOWRITER_PROP_DEPTH,
                                   cv2.CV_8U,
                                   cv2.VIDEOWRITER_PROP_IS_COLOR,
-                                  0,  # false
+                                  0,
                               ]
                               )
 
+        time_read = 0
+        time_remap = 0
+        time_padding = 0
+        time_rot_mat = 0
+        time_rotation = 0
+        time_write = 0
+
         for i in tqdm(range(total_frames), desc="PreProcessing frames"):
+            start_time = time.time()
             success, frame = self.video_capture.read()
+            time_read += time.time() - start_time
+            if RECTIFY:
+                start_time = time.time()
+                frame = cv2.remap(frame, self.mapx, self.mapy, cv2.INTER_LINEAR).astype(np.uint8)
+                time_remap += time.time() - start_time
+
+            start_time = time.time()
             frame = frame[Y1 - PADDING:Y2 + PADDING, X1 - PADDING:X2 + PADDING]
+            time_padding += time.time() - start_time
+
+            start_time = time.time()
             rotate_matrix = cv2.getRotationMatrix2D((frame.shape[1] / 2, frame.shape[0] / 2), angle, 1)
+            time_rot_mat += time.time() - start_time
+
+            start_time = time.time()
             rotated_image = cv2.warpAffine(
                 src=frame, M=rotate_matrix, dsize=(frame.shape[1], frame.shape[0]))[PADDING:Y2 - Y1 + PADDING,
                             PADDING:X2 - X1 + PADDING, 0]
+            time_rotation += time.time() - start_time
 
+            start_time = time.time()
             out.write(rotated_image.astype(np.uint8))
+            time_write += time.time() - start_time
 
             if i < start:
                 angle += self.rotation_per_frame
@@ -620,6 +651,14 @@ class VideoPreprocessor:
                     start, end = self.borderBreakpoints[i_row]
                 else:
                     print(f"Reached out of index {i_row}")
+
+        if VERBOSE:
+            print(f"read() {time_read}\n")
+            print(f"remap() {time_remap}\n")
+            print(f"resize {time_padding}\n")
+            print(f"getRotationMatrix2D() {time_rot_mat}\n")
+            print(f"warpAffine() {time_rotation}\n")
+            print(f"writeAffine() {time_write}\n")
 
         out.release()
 

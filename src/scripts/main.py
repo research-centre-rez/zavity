@@ -1,4 +1,5 @@
 import argparse
+import logging
 import os
 import sys
 
@@ -14,12 +15,22 @@ from steps.video_preprocessor import VideoPreprocessor
 from timeit import default_timer as timer
 from contextlib import contextmanager
 
+# Configure logging
+logging.basicConfig(
+    filename="/output/time.log",  # Log file name
+    level=logging.INFO,  # Set log level to INFO
+    format="%(asctime)s - %(levelname)s - %(message)s",  # Log format
+)
+
 @contextmanager
 def timing(name):
     start = timer()
     yield
     end = timer()
-    print(f"{name}: {end - start:.4f} seconds")
+    duration = end - start
+    message = f"{name}: {duration:.4f} seconds"
+    print(message)
+    logging.info(message)
 
 
 def process_single_video(video_path, output_path, calc_rot_per_frame):

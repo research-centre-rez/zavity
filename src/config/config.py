@@ -8,8 +8,10 @@ PROJECT_DIR = os.path.abspath(os.path.join(BASE_DIR, "..", "..", ".."))  # Navig
 OUTPUT_FOLDER = os.path.join(PROJECT_DIR, 'output')  # Output folder at the same level as zavity
 INPUT_FOLDER = os.path.join(PROJECT_DIR, 'input')  # Input folder at the same level as zavity
 
+VERBOSE = True
+
 # VideoPreprocessor config
-REMOVE_ROTATION = False
+REMOVE_ROTATION = True
 EVERY_NTH_FRAME = 28  # min(2*14x+21529/x) min(2*(num_of_border_breakpoints+1)*x+total_frames/x)
 # window coordinates
 Y1 = 550 #700    # Y1-PADDING cant be lower then 0
@@ -28,6 +30,7 @@ EXT = '.mp4' # '.avi'
 BORDER_BPS = None # For testing purposes [[0, 46], [3034, 3164]]
 REFINED_BP = None # For testing purposes 1208
 INTERVAL_FILTER_TH = 0.25
+CALIBRATION_CONFIG_FILE_PATH = 'src/config'
 
 # VideoMotion config
 FPS_REDUCTION = 1
