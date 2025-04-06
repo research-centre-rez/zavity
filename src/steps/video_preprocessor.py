@@ -2,6 +2,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 from typing import LiteralString
 
 import cv2
@@ -62,9 +63,10 @@ class VideoPreprocessor:
                                                    os.path.splitext(self.video_name)[0] + '_preprocessed' + EXT)
         self.borderBreakpoints = []
         self.calc_rot_per_frame = calc_rot_per_frame
-        self.calib_params = _load_calibration_parameters(CALIBRATION_CONFIG_FILE_PATH)
         self.video_width = int(self.video_capture.get(cv2.CAP_PROP_FRAME_WIDTH))
         self.video_height = int(self.video_capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        _, mtx, newcameramtx, distortion, _, _ = _load_calibration_parameters(CALIBRATION_CONFIG_FILE_PATH)
+        self.mapx, self.mapy = cv2.initUndistortRectifyMap(mtx, distortion, None, newcameramtx, (self.video_width, self.video_height), 5)
 
     def process(self):
         """
@@ -164,15 +166,15 @@ class VideoPreprocessor:
                 start_time = time.time()
                 self.borderBreakpoints = self.refine_border_breakpoints(border_breakpoints, step=EVERY_NTH_FRAME)
                 time_refine_bbp = time.time() - start_time
+                if VERBOSE:
+                    print(f"Breakpoints {time_bp:.4f}")
+                    print(f"BorderBP {time_bbp:.4f}")
+                    print(f"RefineBBP {time_refine_bbp:.4f}")
                 self.dump("borderBreakpoints", self.borderBreakpoints)
 
-        if VERBOSE:
-            print(f"Angles {time_angles:.4f}")
-            print(f"Breakpoints {time_bp:.4f}")
-            print(f"BorderBP {time_bbp:.4f}")
-            print(f"RefineBBP {time_refine_bbp:.4f}")
-            self.plot_angles(self.angles, border_breakpoints=self.borderBreakpoints, breakpoints=self.breakpoints,
-                         step=EVERY_NTH_FRAME)
+            if VERBOSE:
+                self.plot_angles(self.angles, border_breakpoints=self.borderBreakpoints, breakpoints=self.breakpoints,
+                                 step=EVERY_NTH_FRAME)
         self.preprocess_video()
 
 
