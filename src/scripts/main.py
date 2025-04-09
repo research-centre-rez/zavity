@@ -10,9 +10,14 @@ sys.path.append(src_dir)
 
 from timeit import default_timer as timer
 from contextlib import contextmanager
+from config.config import OUTPUT_FOLDER, INPUT_FOLDER
+from steps.image_row_builder import construct_rows
+from steps.image_row_stitcher import ImageRowStitcher
+from steps.video_camera_motion import VideoMotion
+
 # Configure logging
 logging.basicConfig(
-    filename="/output/time.log",  # Log file name
+    filename=os.path.join(OUTPUT_FOLDER, "time.log"),  # Log file name
     level=logging.INFO,  # Set log level to INFO
     format="%(asctime)s - %(levelname)s - %(message)s",  # Log format
 )
@@ -26,13 +31,10 @@ def timing(name):
     print(message)
     logging.info(message)
 
-from config.config import OUTPUT_FOLDER, INPUT_FOLDER
-from steps.image_row_builder import construct_rows
-from steps.image_row_stitcher import ImageRowStitcher
-from steps.video_camera_motion import VideoMotion
 
 
-def process_single_video(video_path, output_path, calc_rot_per_frame):
+def process_single_video(video_name, output_path, calc_rot_per_frame):
+    video_path = os.path.join(INPUT_FOLDER, video_name)
     print(f"Processing single video: {video_path}. Output will be saved to {output_path}.")
     process_video(video_path, output_path, calc_rot_per_frame)
 
@@ -74,8 +76,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Process single or multiple videos into one image overview.")
     parser.add_argument("--mode", type=str, choices=["single", "multiple"], required=True,
                         help="Mode of processing: 'single' for one video, 'multiple' for a folder of videos")
-    parser.add_argument("--path_to_video", type=str, help="Path to the single video file to process")
-    parser.add_argument("--path_to_folder", type=str, help="Path to the folder containing multiple video files")
+    parser.add_argument("--video_name", type=str, help="Path to the single video file to process")
     parser.add_argument("--calc_rot_per_frame", type=bool, default=False,
                         help="Set to True to calculate its own rotation per frame, not using the precalculated one."
                              "It takes around 2 hours. Also it compares the precalculated one with calculated one.")
@@ -86,10 +87,10 @@ if __name__ == "__main__":
     # Process based on mode
     if args.mode == "single":
         # Check if path to a single video is provided
-        video_path = args.path_to_video
-        if not video_path:
+        video_name = args.video_name
+        if not video_name:
             raise ValueError("Please provide --path_to_video for single video processing mode.")
-        process_single_video(video_path, OUTPUT_FOLDER, args.calc_rot_per_frame)
+        process_single_video(video_name, OUTPUT_FOLDER, args.calc_rot_per_frame)
 
     elif args.mode == "multiple":
         # Check if path to folder is provided

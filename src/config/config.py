@@ -1,12 +1,6 @@
-import os
-
-# Get the parent directory of the current script
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))  # Directory of the config folder
-PROJECT_DIR = os.path.abspath(os.path.join(BASE_DIR, "..", "..", ".."))  # Navigate up to the zavity folder
-
 # Dynamic paths based on the project directory
-OUTPUT_FOLDER = os.path.join(PROJECT_DIR, 'output')  # Output folder at the same level as zavity
-INPUT_FOLDER = os.path.join(PROJECT_DIR, 'input')  # Input folder at the same level as zavity
+OUTPUT_FOLDER = "../output" # Output folder at the same level as zavity
+INPUT_FOLDER = "../input"  # Input folder at the same level as zavity
 
 VERBOSE = True
 
