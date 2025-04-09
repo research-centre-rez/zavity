@@ -1,22 +1,19 @@
 import os
 import subprocess
 import sys
-import tempfile
 import time
 from typing import LiteralString
 
 import cv2
-import imageio.v3 as iio
 import matplotlib.pyplot as plt
 import numpy as np
 from scipy import stats
-from scipy.ndimage import gaussian_filter1d
 from scipy.signal import savgol_filter
 from tqdm.auto import tqdm
 
-from config.config import (Y1, Y2, X1, X2, SAMPLES, EVERY_NTH_FRAME, ROT_PER_FRAME, SIGMA, PADDING, CODEC, EXT,
+from config.config import (Y1, Y2, X1, X2, EVERY_NTH_FRAME, ROT_PER_FRAME, PADDING, CODEC, EXT,
                            BORDER_BPS, CALIBRATION_CONFIG_FILE_PATH, REFINED_BP, RECTIFY, INTERVAL_FILTER_TH,
-                           DEVERNAY_DOWNSCALE, SEGMENT_TYPE_THRESHOLD, REMOVE_ROTATION, VERBOSE)
+                           DOWNSCALE, SEGMENT_TYPE_THRESHOLD, REMOVE_ROTATION, VERBOSE)
 from scripts.main import timing
 from steps.video_rectifier import _load_calibration_parameters
 
@@ -191,8 +188,8 @@ class VideoPreprocessor:
             # Crop and downscale
             cropped = cv2.cvtColor(frame[Y1:Y2, X1:X2], cv2.COLOR_BGR2GRAY)
             cropped = cv2.resize(cropped, (
-                cropped.shape[1] // DEVERNAY_DOWNSCALE,
-                cropped.shape[0] // DEVERNAY_DOWNSCALE))
+                cropped.shape[1] // DOWNSCALE,
+                cropped.shape[0] // DOWNSCALE))
             cropped = cv2.GaussianBlur(cropped, (5, 5), 1)
 
             # Edge detection
@@ -344,8 +341,6 @@ class VideoPreprocessor:
             if stats.mode(self.segment_type[breakpoints[i] // step:breakpoints[i + 1] // step])[0] == 0:
                 border_breakpoints.append([breakpoints[i], breakpoints[i + 1]])
 
-        # borderBreakpoints.append([breakpoints[-1], ])
-
         print(f"Calculated: Border Breakpoints\n"
               f"{np.asarray(border_breakpoints)}\n")
 
@@ -494,18 +489,6 @@ class VideoPreprocessor:
         else:
             start, end = 0, 999999
 
-        # if REFINED_BP:
-        #     angle_breakpoint = REFINED_BP
-        #     print(f"Loaded Refined Breakpoint from config\n"
-        #           f"{angle_breakpoint}\n")
-        # else:
-        #     if self.angles[self.breakpoints[2] // EVERY_NTH_FRAME] < self.angles[
-        #         self.breakpoints[1] // EVERY_NTH_FRAME]:
-        #         angle_breakpoint = self.refine_breakpoint(self.breakpoints[2])
-        #     else:
-        #         angle_breakpoint = self.refine_breakpoint(self.breakpoints[3])
-        #
-        # angle = -self.rotation_per_frame * angle_breakpoint
         angle = self.compute_angles(start, start+1, 1, 1800, 200, False)[0]
 
         self.video_capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
@@ -638,61 +621,3 @@ class VideoPreprocessor:
             inverted.pop(-1)
 
         return inverted
-
-
-    def rectify_video(self):
-        """
-        Calls the `rectify.py` script via a subprocess to rectify the video at `self.video_path`.
-
-        This method ensures that the rectified video is stored in the output directory specified
-        by `self.output_path` with the rectified suffix in its filename.
-        """
-        try:
-            # Construct the subprocess command
-            command = [
-                "python", "src/scripts/rectify.py",
-                "--input-video-path", self.video_path,
-                "--output-path", self.output_path,
-                "--calibration-config-dir", "src/config/"
-            ]
-
-            print(f"Running rectification with command: {' '.join(command)}")
-
-            # Use Popen to stream real-time output
-            process = subprocess.Popen(
-                command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                bufsize=1  # Line-buffered
-            )
-
-            # Process stdout and stderr in real time
-            while True:
-                output = process.stdout.readline()
-                error = process.stderr.readline()
-
-                # Handle stdout (normal logs)
-                if output:
-                    sys.stdout.write(output)
-                    sys.stdout.flush()
-
-                # Handle stderr (tqdm progress bar)
-                if error:
-                    sys.stderr.write(error)
-                    sys.stderr.flush()
-
-                # Break when the process is done and no more output
-                if output == "" and error == "" and process.poll() is not None:
-                    break
-
-            # Check return code
-            if process.returncode != 0:
-                raise RuntimeError(
-                    f"Rectification failed with return code {process.returncode}. Check the output above.")
-
-            print(f"Rectification completed successfully. Rectified video saved at {self.rectified_video_file_path}")
-
-        except Exception as e:
-            print(f"An error occurred while rectifying the video: {e}")
-            raise
