@@ -7,21 +7,15 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 src_dir = os.path.join(current_dir, "..")
 sys.path.append(src_dir)
 
-from config.config import OUTPUT_FOLDER, INPUT_FOLDER
-from steps.image_row_builder import construct_rows
-from steps.image_row_stitcher import ImageRowStitcher
-from steps.video_camera_motion import VideoMotion
-from steps.video_preprocessor import VideoPreprocessor
+
 from timeit import default_timer as timer
 from contextlib import contextmanager
-
 # Configure logging
 logging.basicConfig(
     filename="/output/time.log",  # Log file name
     level=logging.INFO,  # Set log level to INFO
     format="%(asctime)s - %(levelname)s - %(message)s",  # Log format
 )
-
 @contextmanager
 def timing(name):
     start = timer()
@@ -31,6 +25,11 @@ def timing(name):
     message = f"{name}: {duration:.4f} seconds"
     print(message)
     logging.info(message)
+
+from config.config import OUTPUT_FOLDER, INPUT_FOLDER
+from steps.image_row_builder import construct_rows
+from steps.image_row_stitcher import ImageRowStitcher
+from steps.video_camera_motion import VideoMotion
 
 
 def process_single_video(video_path, output_path, calc_rot_per_frame):
@@ -51,6 +50,7 @@ def process_video(video_path, output_path, calc_rot_per_frame):
     with timing("Total OIO Pipeline"):
         # Pipeline stages
         with timing("Preprocessor"):
+            from steps.video_preprocessor import VideoPreprocessor
             preprocessor = VideoPreprocessor(video_path, output_path, calc_rot_per_frame)
             preprocessor.process()
             video_file_path = preprocessor.get_output_video_file_path()

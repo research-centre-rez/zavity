@@ -17,6 +17,7 @@ from tqdm.auto import tqdm
 from config.config import (Y1, Y2, X1, X2, SAMPLES, EVERY_NTH_FRAME, ROT_PER_FRAME, SIGMA, PADDING, CODEC, EXT,
                            BORDER_BPS, CALIBRATION_CONFIG_FILE_PATH, REFINED_BP, RECTIFY, INTERVAL_FILTER_TH,
                            DEVERNAY_DOWNSCALE, SEGMENT_TYPE_THRESHOLD, REMOVE_ROTATION, VERBOSE)
+from scripts.main import timing
 from steps.video_rectifier import _load_calibration_parameters
 
 
@@ -141,11 +142,8 @@ class VideoPreprocessor:
                 self.angles = np.load(self._dump_path("angles"))
                 print(f"Loaded {self._dump_path('angles')}\n")
             else:
-                start_time = time.time()
-                self.angles = self.compute_angles()
-                time_angles = time.time() - start_time
-                if VERBOSE:
-                    print(f"Angles {time_angles:.4f}")
+                with timing("Compute Angles"):
+                    self.angles = self.compute_angles()
                 self.dump("angles", self.angles)
 
             if os.path.isfile(self._dump_path("breakpoints")) and os.path.isfile(self._dump_path("borderBreakpoints")):
@@ -156,20 +154,13 @@ class VideoPreprocessor:
                 print(f"Loaded {self._dump_path('breakpoints')}\n"
                       f"{self.breakpoints}\n")
             else:
-                start_time = time.time()
-                self.breakpoints = self.compute_breakpoints(self.angles, step=EVERY_NTH_FRAME)
-                time_bp = time.time() - start_time
+                with timing("Compute Breakpoints"):
+                    self.breakpoints = self.compute_breakpoints(self.angles, step=EVERY_NTH_FRAME)
                 self.dump("breakpoints", self.breakpoints)
-                start_time = time.time()
-                border_breakpoints = self.compute_border_breakpoints(self.breakpoints, EVERY_NTH_FRAME)
-                time_bbp = time.time() - start_time
-                start_time = time.time()
-                self.borderBreakpoints = self.refine_border_breakpoints(border_breakpoints, step=EVERY_NTH_FRAME)
-                time_refine_bbp = time.time() - start_time
-                if VERBOSE:
-                    print(f"Breakpoints {time_bp:.4f}")
-                    print(f"BorderBP {time_bbp:.4f}")
-                    print(f"RefineBBP {time_refine_bbp:.4f}")
+                with timing("Compute Border Breakpoints"):
+                    border_breakpoints = self.compute_border_breakpoints(self.breakpoints, EVERY_NTH_FRAME)
+                with timing("Compute Border Breakpoints"):
+                    self.borderBreakpoints = self.refine_border_breakpoints(border_breakpoints, step=EVERY_NTH_FRAME)
                 self.dump("borderBreakpoints", self.borderBreakpoints)
 
             if VERBOSE:
@@ -177,41 +168,10 @@ class VideoPreprocessor:
                                  step=EVERY_NTH_FRAME)
         self.preprocess_video()
 
-
-    @staticmethod
-    def unix_path_to_win_path(path):
+    def compute_angles(self, start=0, end=None, step=EVERY_NTH_FRAME, angle_precision=90, hough_treshold=80, apply_abs=True):
         """
-        Converts a Unix-style path to a Windows-style path.
-
-        Args:
-            path (str): Unix-style path.
-
-        Returns:
-            str: Windows-style path.
-        """
-        return path.replace("/mnt/c/", "C:/").replace("/", "\\\\")
-
-    @staticmethod
-    def win_path_to_unix_path(path):
-        """
-        Converts a Windows-style path to a Unix-style path.
-
-        Args:
-            path (str): Windows-style path.
-
-        Returns:
-            str: Unix-style path.
-        """
-        return path.replace("\\", "/").replace("C:/", "/mnt/c/")
-
-    def compute_angles(self, start=0, end=None, step=EVERY_NTH_FRAME):
-        """
-        Computes angles for the video frames between start and end with a given step.
-
-        Args:
-            start (int): Starting frame index. Defaults to 0.
-            end (int): Ending frame index. Defaults to None (end of video).
-            step (int): Step size for frame iteration.
+        Computes angles for the video frames between start and end with a given step,
+        using OpenCV Canny + Hough transform instead of Devernay.
 
         Returns:
             np.ndarray: Computed angles for each frame.
@@ -220,93 +180,45 @@ class VideoPreprocessor:
         if end is None:
             end = int(self.video_capture.get(cv2.CAP_PROP_FRAME_COUNT))
 
-        for i in tqdm(range(start, end, step), desc=f"Computing histograms from {start} to {end} with step {step}"):
+        for i in tqdm(range(start, end, step), desc=f"Computing angles from {start} to {end} with step {step}"):
             self.video_capture.set(cv2.CAP_PROP_POS_FRAMES, i)
             success, frame = self.video_capture.read()
-            cropped_frame = frame[Y1:Y2, X1:X2, 0]
-            cropped_frame = cv2.resize(cropped_frame, (cropped_frame.shape[0] // DEVERNAY_DOWNSCALE, cropped_frame.shape[1] // DEVERNAY_DOWNSCALE))
-            otsu_threshold, _ = cv2.threshold(cropped_frame, 0, 255, cv2.THRESH_OTSU)
-
-            with tempfile.NamedTemporaryFile(suffix=".pgm", delete=False) as tmpfile:
-                filename = tmpfile.name
-                iio.imwrite(tmpfile.name, cropped_frame)  # this must be a grayscale image
-
-                output_path = tmpfile.name.replace(".pgm", ".txt")
-
-                process = subprocess.Popen(
-                    ["devernay", self.win_path_to_unix_path(tmpfile.name),
-                     "-t", self.win_path_to_unix_path(output_path),
-                     "-l", f"{otsu_threshold / 15}",
-                     "-h", f"{otsu_threshold / 3}",
-                     # "-p", f"/mnt/c/Users/fathe/OneDrive/Documents/UK/MFF/Thesis/output/sample{i}.pdf",
-                     "-s", f"1"],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE
-                )
-                tmpfile.close()
-
-            # Wait for the process to complete and get stdout and stderr
-            stdout, stderr = process.communicate()
-
-            # Check for errors in stderr
-            if stderr:
-                print("Error running devernay:", stderr.decode("utf-8"))
-            if os.path.exists(output_path):
-                with open(output_path, 'r') as output_file:
-                    result = output_file.read()
-            else:
-                print(f"Output file {output_path} does not exist.")
-
-            lines = result.split("\n")
-            dev = []
-            for line in lines:
-                if line != "":
-                    x, y = line.split(' ')
-                    dev.append((float(x), float(y)))
-            dev = np.array(dev)
-            if len(dev) == 0:
-                print(f"Devernay did not find any angles for frame: {i}")
+            if not success or frame is None:
+                print(f"Failed to read frame {i}")
                 computed_angles.append(45)
-            else:
-                choice = np.random.randint(0, len(dev), SAMPLES)
-                xx0 = np.matmul(dev[choice, 0].reshape(-1, 1), np.ones((1, len(choice))))
-                yy0 = np.matmul(dev[choice, 1].reshape(-1, 1), np.ones((1, len(choice))))
-                xx1 = np.matmul(np.ones((len(choice), 1)), dev[choice, 0].reshape(1, -1))
-                yy1 = np.matmul(np.ones((len(choice), 1)), dev[choice, 1].reshape(1, -1))
-                valid = np.zeros_like(xx0, dtype=bool)
-                valid[xx0 != xx1] = 1
-                angles = np.zeros_like(xx0, np.float32)
-                angles[xx0 == xx1] = np.pi / 2
-                angles[valid] = np.arctan((yy0[valid] - yy1[valid]) / (xx0[valid] - xx1[valid])).reshape(-1)
-                angles[np.eye(SAMPLES, dtype=bool)] = np.nan
+                continue
 
-                filtered = np.rad2deg(np.abs(angles[~np.isnan(angles)]))
+            # Crop and downscale
+            cropped = cv2.cvtColor(frame[Y1:Y2, X1:X2], cv2.COLOR_BGR2GRAY)
+            cropped = cv2.resize(cropped, (
+                cropped.shape[1] // DEVERNAY_DOWNSCALE,
+                cropped.shape[0] // DEVERNAY_DOWNSCALE))
+            cropped = cv2.GaussianBlur(cropped, (5, 5), 1)
 
-                if filename is not None and os.path.exists(filename):
-                    os.remove(filename)
+            # Edge detection
+            edges = cv2.Canny(cropped, 70, 180)
 
-                angle = self.compute_angle(filtered)
-                computed_angles.append(angle)
+            # Hough Transform
+            lines = cv2.HoughLinesP(edges, 1, np.pi / angle_precision, hough_treshold, minLineLength=cropped.shape[0]/2.5, maxLineGap=cropped.shape[0]/3)
+            if lines is None:
+                print(f"No lines detected in frame {i}")
+                computed_angles.append(45)
+                continue
+
+            # Extract angles and compute dominant
+            angles = []
+            for line in lines:
+                x1, y1, x2, y2 = line[0]
+                angle_rad = np.arctan2(y2 - y1, x2 - x1)
+                angles.append(np.rad2deg(angle_rad))
+
+            angle_median = np.median(angles)
+            if apply_abs:
+                angle_median = np.abs(angle_median)
+            computed_angles.append(angle_median)
 
         print(f"Angles calculated from {start} to {end} with step {step}\n")
         return np.array(computed_angles)
-
-    @staticmethod
-    def compute_angle(hist):
-        """
-        Computes the most frequent angle from a histogram of angles.
-
-        Args:
-            hist (list): Histogram of angles.
-
-        Returns:
-            float: Most frequent angle.
-        """
-        counts, values = np.histogram(hist, bins=SAMPLES)
-        counts = gaussian_filter1d(counts, sigma=SIGMA)
-        max_index = np.argmax(counts)
-
-        return values[max_index]
 
     def compute_breakpoints(self, angles=None, filter_length=-1, step=EVERY_NTH_FRAME, threshold=SEGMENT_TYPE_THRESHOLD,
                             merge_threshold=EVERY_NTH_FRAME, secondary=True, segment_type_return=False):
@@ -480,9 +392,9 @@ class VideoPreprocessor:
         Returns:
            int: Refined breakpoint index.
         """
-        angles = self.compute_angles(bp - EVERY_NTH_FRAME, bp + EVERY_NTH_FRAME, 1)
+        angles = self.compute_angles(bp - EVERY_NTH_FRAME, bp + EVERY_NTH_FRAME, 1, 1800, 200)
         breakpoints, segment_type = self.compute_breakpoints(angles, step=1, merge_threshold=1,
-                                                             segment_type_return=True, filter_length=8)
+                                                             segment_type_return=True, filter_length=5)
         if len(breakpoints) == 3:
             refined_bp = breakpoints[1]
         elif len(breakpoints) > 3:
@@ -582,18 +494,19 @@ class VideoPreprocessor:
         else:
             start, end = 0, 999999
 
-        if REFINED_BP:
-            angle_breakpoint = REFINED_BP
-            print(f"Loaded Refined Breakpoint from config\n"
-                  f"{angle_breakpoint}\n")
-        else:
-            if self.angles[self.breakpoints[2] // EVERY_NTH_FRAME] < self.angles[
-                self.breakpoints[1] // EVERY_NTH_FRAME]:
-                angle_breakpoint = self.refine_breakpoint(self.breakpoints[2])
-            else:
-                angle_breakpoint = self.refine_breakpoint(self.breakpoints[3])
-
-        angle = -self.rotation_per_frame * angle_breakpoint
+        # if REFINED_BP:
+        #     angle_breakpoint = REFINED_BP
+        #     print(f"Loaded Refined Breakpoint from config\n"
+        #           f"{angle_breakpoint}\n")
+        # else:
+        #     if self.angles[self.breakpoints[2] // EVERY_NTH_FRAME] < self.angles[
+        #         self.breakpoints[1] // EVERY_NTH_FRAME]:
+        #         angle_breakpoint = self.refine_breakpoint(self.breakpoints[2])
+        #     else:
+        #         angle_breakpoint = self.refine_breakpoint(self.breakpoints[3])
+        #
+        # angle = -self.rotation_per_frame * angle_breakpoint
+        angle = self.compute_angles(start, start+1, 1, 1800, 200, False)[0]
 
         self.video_capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
         total_frames = int(self.video_capture.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -613,8 +526,6 @@ class VideoPreprocessor:
 
         time_read = 0
         time_remap = 0
-        time_padding = 0
-        time_rot_mat = 0
         time_rotation = 0
         time_write = 0
 
@@ -627,13 +538,9 @@ class VideoPreprocessor:
                 frame = cv2.remap(frame, self.mapx, self.mapy, cv2.INTER_LINEAR).astype(np.uint8)
                 time_remap += time.time() - start_time
 
-            start_time = time.time()
             frame = frame[Y1 - PADDING:Y2 + PADDING, X1 - PADDING:X2 + PADDING]
-            time_padding += time.time() - start_time
 
-            start_time = time.time()
             rotate_matrix = cv2.getRotationMatrix2D((frame.shape[1] / 2, frame.shape[0] / 2), angle, 1)
-            time_rot_mat += time.time() - start_time
 
             start_time = time.time()
             rotated_image = cv2.warpAffine(
@@ -657,10 +564,8 @@ class VideoPreprocessor:
         if VERBOSE:
             print(f"read() {time_read}\n")
             print(f"remap() {time_remap}\n")
-            print(f"resize {time_padding}\n")
-            print(f"getRotationMatrix2D() {time_rot_mat}\n")
             print(f"warpAffine() {time_rotation}\n")
-            print(f"writeAffine() {time_write}\n")
+            print(f"write() {time_write}\n")
 
         out.release()
 
