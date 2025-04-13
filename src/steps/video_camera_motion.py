@@ -1,12 +1,13 @@
 import os.path
 import pickle
 import cv2
+cv2.setNumThreads(cv2.getNumberOfCPUs())
 import numpy as np
 import pandas as pd
 from scipy.stats import stats
 from tqdm.auto import tqdm
 
-from config.config import FPS_REDUCTION, RESOLUTION_DECS, ROW_OVERLAP
+from config.config import MOTION_SAMPLING, MOTION_DOWNSCALE, ROW_ROTATION_OVERLAP_RATIO, LOAD_VIDEO_TO_RAM, OUTPUT_FOLDER
 
 
 class VideoMotion:
@@ -23,7 +24,6 @@ class VideoMotion:
         width (int): Width of the resized video frame.
         height (int): Height of the resized video frame.
         video_file_path (str): Path to the input video file.
-        output_path (str): Path to store output results.
         video_name (str): Name of the video file.
         frames_per_360 (int): Number of frames for a 360-degree rotation.
         cw (bool): Indicates whether the motion is clockwise.
@@ -37,18 +37,17 @@ class VideoMotion:
     width: int
     height: int
     video_file_path: str
-    output_path: str
     video_name: str
-    frames_per_360 = int
-    cw = bool
+    frames_per_360: int
+    cw: bool
+    frames: np.ndarray
 
-    def __init__(self, video_file_path: str, output_path: str, intervals: list):
+    def __init__(self, frames: np.ndarray,  video_file_path: str, intervals: list):
         """
         Initializes the VideoMotion class.
 
         Args:
             video_file_path (str): Path to the input video file.
-            output_path (str): Directory to save outputs.
             intervals (list): List of intervals with vertical computed during video preprocessing.
         """
         self.speeds = {}
@@ -56,11 +55,14 @@ class VideoMotion:
         self.motion_directions = []
         self.motion_positions = []
         self.intervals = np.array(intervals)
-        self.video_capture = cv2.VideoCapture(video_file_path)
-        self.width = int(self.video_capture.get(cv2.CAP_PROP_FRAME_WIDTH) / RESOLUTION_DECS)
-        self.height = int(self.video_capture.get(cv2.CAP_PROP_FRAME_HEIGHT) / RESOLUTION_DECS)
+        if LOAD_VIDEO_TO_RAM:
+            self.frames = frames
+            self.width, self.height = frames.shape[2] / MOTION_DOWNSCALE, frames.shape[1] / MOTION_DOWNSCALE
+        else:
+            self.video_capture = cv2.VideoCapture(video_file_path)
+            self.width = int(self.video_capture.get(cv2.CAP_PROP_FRAME_WIDTH) / MOTION_DOWNSCALE)
+            self.height = int(self.video_capture.get(cv2.CAP_PROP_FRAME_HEIGHT) / MOTION_DOWNSCALE)
         self.video_file_path = video_file_path
-        self.output_path = output_path
         self.video_name = os.path.basename(video_file_path)
 
     @staticmethod
@@ -88,7 +90,7 @@ class VideoMotion:
         Returns:
             str: Full path to the file.
         """
-        return os.path.join(self.output_path, os.path.splitext(self.video_name)[0] + f'-{obj_name}.npy')
+        return os.path.join(OUTPUT_FOLDER, os.path.splitext(self.video_name)[0] + f'-{obj_name}.npy')
 
     def dump(self, name: str, obj):
         """
@@ -118,7 +120,9 @@ class VideoMotion:
                 self.stats = pickle.load(fp)
             print(f"Horizontal speed: {self.speeds['horizontal']}±{self.stats['horizontal_speed_std']}\n"
                   f"Vertical shift: {self.speeds['vertical_shift']}±{self.stats['vertical_shift_std']}\n"
-                  f"Clockwise: {self.get_direction()}, Portrait: {self.is_portrait()}\nLoaded\n")
+                  f"Clockwise: {self.get_direction()}\n"
+                  f"Portrait: {self.is_portrait()}\n"
+                  f"Moving down: {self.is_moving_down()}\nLoaded\n")
             self.frames_per_360 = np.load(self._dump_path("frames_per_360"))
             print(f"Frames per 360: {self.frames_per_360} Loaded")
         else:
@@ -157,6 +161,18 @@ class VideoMotion:
         print(f"Processing VideoMotion for: {self.video_file_path}\n")
         self.load_or_compute()
 
+    def getFrameFromRAM(self, i):
+        return self.frames[i]
+
+    def getFrameFromVidCap(self, i):
+        self.video_capture.set(cv2.CAP_PROP_POS_FRAMES, i)
+        success, frame = self.video_capture.read()
+
+        if not success or frame is None:
+            print(f"Failed to read frame {i}")
+
+        return cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
     def compute_motion(self):
         """
         Computes motion directions and positions for each frame in the video.
@@ -172,27 +188,26 @@ class VideoMotion:
 
         err_threshold = 9
 
-        ret, old_frame = self.video_capture.read()
-        old_gray = cv2.cvtColor(cv2.resize(old_frame, (self.width, self.height)), cv2.COLOR_BGR2GRAY)
+        if LOAD_VIDEO_TO_RAM:
+            getFrame = self.getFrameFromRAM
+            total_frames = len(self.frames)
+        else:
+            getFrame = self.getFrameFromVidCap
+            total_frames = int(self.video_capture.get(cv2.CAP_PROP_FRAME_COUNT))
 
-        self.motion_positions.append((int(self.video_capture.get(cv2.CAP_PROP_POS_FRAMES)), 0.0, 0.0))
 
-        total_frames = int(self.video_capture.get(cv2.CAP_PROP_FRAME_COUNT))
-        pbar = tqdm(total=total_frames // FPS_REDUCTION, desc='Processing motion from frames')
+        prev_frame = getFrame(0)
+        prev_frame = cv2.resize(prev_frame, (prev_frame.shape[1] // MOTION_DOWNSCALE, prev_frame.shape[0] // MOTION_DOWNSCALE))
+        self.motion_positions.append((0, 0.0, 0.0))
 
-        # current_frame_n = self.fps_reduction
+        for i in tqdm(range(MOTION_SAMPLING, total_frames, MOTION_SAMPLING), desc=f"Processing motion from frames"):
+            frame = getFrame(i)
 
-        while True:
-            # self.video_capture.set(cv2.CAP_PROP_POS_FRAMES, current_frame_n)
-            ret, frame = self.video_capture.read()
-            if not ret:
-                break
-
-            frame_gray = cv2.cvtColor(cv2.resize(frame, (self.width, self.height)), cv2.COLOR_BGR2GRAY)
-            corners = self.get_corners(old_gray, **feature_params)
+            frame = cv2.resize(frame, (frame.shape[1] // MOTION_DOWNSCALE, frame.shape[0] // MOTION_DOWNSCALE))
+            corners = self.get_corners(prev_frame, **feature_params)
 
             if corners is not None:
-                p1, st, err = cv2.calcOpticalFlowPyrLK(old_gray, frame_gray, corners, None, **lk_params)
+                p1, st, err = cv2.calcOpticalFlowPyrLK(prev_frame, frame, corners, None, **lk_params)
 
                 st = (st == 1) & (err < err_threshold)
                 good_new = p1[st == 1]
@@ -200,7 +215,7 @@ class VideoMotion:
                 if good_new.shape[0] > 0:
                     movement_direction = np.mean(good_new - good_old, axis=0)
                     max_pos = np.argmax(np.abs(movement_direction))
-                    self.motion_positions.append((int(self.video_capture.get(cv2.CAP_PROP_POS_FRAMES)),
+                    self.motion_positions.append((i,
                                                   self.motion_positions[-1][1] + movement_direction[0],
                                                   self.motion_positions[-1][2] + movement_direction[1]))
 
@@ -215,14 +230,14 @@ class VideoMotion:
                         else:
                             self.motion_directions.append(4)
                 else:
-                    self.motion_positions.append((int(self.video_capture.get(cv2.CAP_PROP_POS_FRAMES)),
+                    self.motion_positions.append((i,
                                                   self.motion_positions[-1][1] + self.motion_positions[-1][1] -
                                                   self.motion_positions[-2][1],
                                                   self.motion_positions[-1][2] + self.motion_positions[-1][2] -
                                                   self.motion_positions[-2][2]))
                     self.motion_directions.append(0)
             else:
-                self.motion_positions.append((int(self.video_capture.get(cv2.CAP_PROP_POS_FRAMES)),
+                self.motion_positions.append((i,
                                               self.motion_positions[-1][1] + self.motion_positions[-1][1] -
                                               self.motion_positions[-2][1],
                                               self.motion_positions[-1][2] + self.motion_positions[-1][2] -
@@ -230,45 +245,7 @@ class VideoMotion:
                 self.motion_directions.append(0)
 
             # Now update the previous frame and previous points
-            old_gray = frame_gray
-
-            # Update the progress bar
-            pbar.update(1)
-            # current_frame_n += self.fps_reduction
-
-        cv2.destroyAllWindows()
-        pbar.close()
-
-    def show_frames(self, frame_numbers):
-        """
-        Displays specified frames from the video for visualization.
-
-        Args:
-            frame_numbers (list[int]): List of frame indices to display.
-        """
-        for frame_number in frame_numbers:
-            # Set the position of the video to the desired frame
-            self.video_capture.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
-
-            # Read the frame
-            ret, frame = self.video_capture.read()
-
-            height, width = frame.shape[:2]
-
-            # Resize the frame
-            new_width = int(width * 0.3)
-            new_height = int(height * 0.3)
-            resized_frame = cv2.resize(frame, (new_width, new_height))
-
-            # Display the frame
-            cv2.imshow(f"Frame {frame_number}", resized_frame)
-
-        # Wait for a key press and close the display window
-        cv2.waitKey(0)
-        cv2.destroyAllWindows()
-
-        # Release the video capture object
-        self.video_capture.release()
+            prev_frame = frame
 
     def get_intervals(self):
         """
@@ -297,8 +274,8 @@ class VideoMotion:
         for start, end in self.intervals:
             mask_horizontal |= (df['frame_ID'] >= start + 5) & (df['frame_ID'] <= end - 5)
         df_horizontal = df[mask_horizontal]
-        self.speeds["horizontal"] = df_horizontal["x_shift_diff"].mean() * RESOLUTION_DECS
-        self.stats["horizontal_speed_std"] = df_horizontal["x_shift_diff"].std() * RESOLUTION_DECS
+        self.speeds["horizontal"] = df_horizontal["x_shift_diff"].mean() * MOTION_DOWNSCALE
+        self.stats["horizontal_speed_std"] = df_horizontal["x_shift_diff"].std() * MOTION_DOWNSCALE
 
         # mask_vertical = pd.Series(False, index=df.index)
         # for start, end in self.getInvertedIntervals():
@@ -310,11 +287,15 @@ class VideoMotion:
         for start, end in self.get_inverted_intervals():
             vertical_shift = df.loc[end, "y_shift"] - df.loc[start, "y_shift"]
             vertical_shifts.append(vertical_shift)
-        self.speeds["vertical_shift"] = np.mean(vertical_shifts) * RESOLUTION_DECS
-        self.stats["vertical_shift_std"] = np.std(vertical_shifts) * RESOLUTION_DECS
+        self.speeds["vertical_shift"] = np.mean(vertical_shifts) * MOTION_DOWNSCALE
+        self.stats["vertical_shift_std"] = np.std(vertical_shifts) * MOTION_DOWNSCALE
 
         print(
-            f"Horizontal speed: {self.speeds['horizontal']}±{self.stats['horizontal_speed_std']}\nVertical shift: {self.speeds['vertical_shift']}±{self.stats['vertical_shift_std']}\nClockwise: {self.get_direction()}, Portrait: {self.is_portrait()}\nCalculated\n")
+            f"Horizontal speed: {self.speeds['horizontal']}±{self.stats['horizontal_speed_std']}\n"
+            f"Vertical shift: {self.speeds['vertical_shift']}±{self.stats['vertical_shift_std']}\n"
+            f"Clockwise: {self.get_direction()}\n"
+            f"Portrait: {self.is_portrait()}\n"
+            f"Moving down: {self.is_moving_down()}\nCalculated\n")
 
     def get_horizontal_speed(self):
         """
@@ -388,20 +369,19 @@ class VideoMotion:
         """
         results = []
 
-        frame_shift = int(np.ceil(np.mean(self.intervals[:, 1] - self.intervals[:, 0]) / ROW_OVERLAP))
+        if LOAD_VIDEO_TO_RAM:
+            getFrame = self.getFrameFromRAM
+        else:
+            getFrame = self.getFrameFromVidCap
+
+        frame_shift = int(np.ceil(np.mean(self.intervals[:, 1] - self.intervals[:, 0]) / ROW_ROTATION_OVERLAP_RATIO))
 
         for start, end in self.intervals:
-            frame = int(start + 50)
-            self.video_capture.set(cv2.CAP_PROP_POS_FRAMES, frame)
-            stat_a, a = self.video_capture.read()
-            self.video_capture.set(cv2.CAP_PROP_POS_FRAMES, frame + frame_shift)
-            stat_b, b = self.video_capture.read()
-
-            if not stat_a:
-                print(f"Unable to read frame: {frame}")
-            elif not stat_b:
-                print(f"Unable to read frame: {frame + frame_shift}")
-            else:
+            samples = []
+            for i in range(20, 101, 20):
+                frame = int(start + i)
+                a = getFrame(frame)
+                b = getFrame(frame + frame_shift)
 
                 feature_params = dict(maxCorners=100,
                                       qualityLevel=0.1,
@@ -414,12 +394,9 @@ class VideoMotion:
 
                 err_threshold = 9
 
-                a_gray = cv2.cvtColor(a, cv2.COLOR_BGR2GRAY)
-                b_gray = cv2.cvtColor(b, cv2.COLOR_BGR2GRAY)
+                corners = cv2.goodFeaturesToTrack(a, **feature_params)
 
-                corners = cv2.goodFeaturesToTrack(a_gray, **feature_params)
-
-                p1, st, err = cv2.calcOpticalFlowPyrLK(a_gray, b_gray, corners, None, **lk_params)
+                p1, st, err = cv2.calcOpticalFlowPyrLK(a, b, corners, None, **lk_params)
 
                 # st = (st == 1) & (err < err_threshold)
                 p1 = p1[st == 1]
@@ -427,7 +404,9 @@ class VideoMotion:
 
                 move = np.mean(p1 - p0, axis=0)
 
-                results.append(move[0])
+                samples.append(move[0])
+
+            results.append(np.median(samples))
 
         self.frames_per_360 = np.ceil(frame_shift + np.mean(results) / abs(self.speeds['horizontal'])).astype(int)
         print(f"Frames per 360: {self.frames_per_360} calculated from frame_shift: {frame_shift}")

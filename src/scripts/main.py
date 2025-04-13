@@ -11,7 +11,7 @@ sys.path.append(src_dir)
 from timeit import default_timer as timer
 from contextlib import contextmanager
 from config.config import OUTPUT_FOLDER, INPUT_FOLDER
-from steps.image_row_builder import construct_rows
+from steps.image_row_builder import Constructor
 from steps.image_row_stitcher import ImageRowStitcher
 from steps.video_camera_motion import VideoMotion
 
@@ -33,39 +33,41 @@ def timing(name):
 
 
 
-def process_single_video(video_name, output_path, calc_rot_per_frame):
+def process_single_video(video_name, calc_rot_per_frame):
     video_path = os.path.join(INPUT_FOLDER, video_name)
-    print(f"Processing single video: {video_path}. Output will be saved to {output_path}.")
-    process_video(video_path, output_path, calc_rot_per_frame)
+    print(f"Processing single video: {video_path}. Output will be saved to {OUTPUT_FOLDER}.")
+    process_video(video_path, calc_rot_per_frame)
 
 
-def process_multiple_videos(folder_path, output_path, calc_rot_per_frame):
-    print(f"Processing multiple videos in folder: {folder_path}. Output will be saved to {output_path}.")
+def process_multiple_videos(folder_path, calc_rot_per_frame):
+    print(f"Processing multiple videos in folder: {folder_path}. Output will be saved to {OUTPUT_FOLDER}.")
     # List all video files in the specified folder
     for filename in os.listdir(folder_path):
         video_path = os.path.join(folder_path, filename)
         if os.path.isfile(video_path):
-            process_video(video_path, output_path, calc_rot_per_frame)
+            process_video(video_path, calc_rot_per_frame)
 
 
-def process_video(video_path, output_path, calc_rot_per_frame):
+def process_video(video_path, calc_rot_per_frame):
     with timing("Total OIO Pipeline"):
         # Pipeline stages
         with timing("Preprocessor"):
             from steps.video_preprocessor import VideoPreprocessor
-            preprocessor = VideoPreprocessor(video_path, output_path, calc_rot_per_frame)
+            preprocessor = VideoPreprocessor(video_path, calc_rot_per_frame)
             preprocessor.process()
             video_file_path = preprocessor.get_output_video_file_path()
+            frames = preprocessor.getProcessedFrames()
 
         with timing("VideoMotion"):
-            motions = VideoMotion(video_file_path, output_path, preprocessor.get_intervals())
+            motions = VideoMotion(frames, video_file_path, preprocessor.get_intervals())
             motions.process()
 
         with timing("RowBuilder"):
-            construct_rows(motions, preprocessor.get_intervals(), video_file_path, output_path)
+            constructor = Constructor(frames, motions, preprocessor.get_intervals(), video_file_path)
+            rows = constructor.construct_rows()
 
         with timing("RowStitcher"):
-            stitcher = ImageRowStitcher(output_path, motions, video_path)
+            stitcher = ImageRowStitcher(rows, motions, video_path)
             stitcher.process()
 
     # print("OIO done")
@@ -90,11 +92,11 @@ if __name__ == "__main__":
         video_name = args.video_name
         if not video_name:
             raise ValueError("Please provide --path_to_video for single video processing mode.")
-        process_single_video(video_name, OUTPUT_FOLDER, args.calc_rot_per_frame)
+        process_single_video(video_name, args.calc_rot_per_frame)
 
     elif args.mode == "multiple":
         # Check if path to folder is provided
         folder_path = args.path_to_folder if args.path_to_folder else INPUT_FOLDER
         if not folder_path:
             raise ValueError("Please provide --path_to_folder for multiple videos processing mode.")
-        process_multiple_videos(folder_path, OUTPUT_FOLDER, args.calc_rot_per_frame)
+        process_multiple_videos(folder_path, args.calc_rot_per_frame)
