@@ -7,11 +7,10 @@ current_dir = os.path.dirname(os.path.abspath(__file__))
 src_dir = os.path.join(current_dir, "..")
 sys.path.append(src_dir)
 
-
 from timeit import default_timer as timer
 from contextlib import contextmanager
 from config.config import OUTPUT_FOLDER, INPUT_FOLDER
-from steps.image_row_builder import Constructor
+from steps.image_row_builder import ImageRowBuilder
 from steps.image_row_stitcher import ImageRowStitcher
 from steps.video_camera_motion import VideoMotion
 
@@ -21,6 +20,8 @@ logging.basicConfig(
     level=logging.INFO,  # Set log level to INFO
     format="%(asctime)s - %(levelname)s - %(message)s",  # Log format
 )
+
+
 @contextmanager
 def timing(name):
     start = timer()
@@ -30,7 +31,6 @@ def timing(name):
     message = f"{name}: {duration:.4f} seconds"
     print(message)
     logging.info(message)
-
 
 
 def process_single_video(video_name, calc_rot_per_frame):
@@ -63,7 +63,7 @@ def process_video(video_path, calc_rot_per_frame):
             motions.process()
 
         with timing("RowBuilder"):
-            constructor = Constructor(frames, motions, preprocessor.get_intervals(), video_file_path)
+            constructor = ImageRowBuilder(frames, motions, preprocessor.get_intervals(), video_file_path)
             rows = constructor.construct_rows()
 
         with timing("RowStitcher"):

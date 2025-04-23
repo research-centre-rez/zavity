@@ -2,14 +2,14 @@ import math
 import os
 from typing import LiteralString
 
+import cv2
 import imageio.v3 as iio
 import numpy as np
-from matplotlib import pyplot as plt
 from scipy.interpolate import RegularGridInterpolator
 from scipy.optimize import minimize
 from tqdm.auto import tqdm
 
-from config.config import SEARCH_SPACE_SIZE, TESTING_MODE, ROW_ROTATION_OVERLAP_RATIO, XTOL, FTOL, OUTPUT_FOLDER
+from config.config import SEARCH_SPACE_SIZE, TESTING_MODE, ROW_ROTATION_OVERLAP_RATIO, XTOL, FTOL, OUTPUT_FOLDER, N_CPUS
 from steps.video_camera_motion import VideoMotion
 
 
@@ -51,6 +51,7 @@ class ImageRowStitcher:
             motions (VideoMotion): Instance of VideoMotion for motion data.
             video_path (str): Path to the video file.
         """
+        cv2.setNumThreads(N_CPUS)
         self.motions = motions
         self.imageRows = rows
         self.rolledImageRows = []
@@ -68,6 +69,9 @@ class ImageRowStitcher:
             pass
         else:
             self.align_height()
+            self.align_width()
+            if not self.motions.is_moving_down():
+                self.imageRows.reverse()
             if len(self.imageRows) == 1:
                 iio.imwrite(self.output_oio_path, self.imageRows[0].astype(np.uint8))
             else:
@@ -84,8 +88,20 @@ class ImageRowStitcher:
         desired_shape = np.min(shapes, axis=0)
         for i, r in enumerate(self.imageRows):
             crop = r.shape - desired_shape
-            self.imageRows[i] = r[math.floor(crop[0] / 2):r.shape[0] - math.ceil(crop[0] / 2),
-                                math.floor(crop[1] / 2):r.shape[1] - math.ceil(crop[1] / 2)]
+            self.imageRows[i] = r[math.floor(crop[0] / 2):r.shape[0] - math.ceil(crop[0] / 2), :]
+
+    def align_width(self):
+        """
+        Aligns the width of all image rows to the median row width.
+        Scales each row to achieve uniform dimensions using cubic interpolation.
+        """
+        shapes = [r.shape for r in self.imageRows]
+        widths = [shape[1] for shape in shapes]
+        median_width = int(np.median(widths))
+        height = shapes[0][0]  # assuming consistent height
+
+        for i, r in enumerate(self.imageRows):
+            self.imageRows[i] = cv2.resize(r, (median_width, height), interpolation=cv2.INTER_CUBIC)
 
     def load_or_compute(self):
         """
@@ -99,6 +115,10 @@ class ImageRowStitcher:
             np.save(self._dump_path('positions'), self.per_row_shift)
 
         self.rollImageRows()
+        if TESTING_MODE:
+            for i, row in enumerate(self.rolledImageRows):
+                file_path = os.path.join(OUTPUT_FOLDER, os.path.splitext(self.video_name)[0] + f"-oio-{i}-rolled.png")
+                iio.imwrite(file_path, row.astype(np.uint8))
         self.stitchImageRows()
         self.dumpOIO()
 
@@ -204,24 +224,17 @@ class ImageRowStitcher:
         """
         Computes relative shifts between image rows based on mutual information alignment.
         """
-        if self.motions.is_moving_down():
-            self.physics["shift"] = -int(self.motions.get_average_vertical_shift() - 20)
-        else:
-            self.physics["shift"] = int(self.motions.get_average_vertical_shift())
+        # TODO: Find out why is it consistently '-20'
+        self.physics["shift"] = int(self.motions.get_average_vertical_shift() - 20)
 
-        if self.motions.get_direction() == 'CCW':
-            self.physics["roll"] = int(np.round(self.imageRows[0].shape[1] * (ROW_ROTATION_OVERLAP_RATIO - 1))) + 62
-        elif self.motions.get_direction() == 'CW':
+        if ((self.motions.get_direction() == 'CCW' and self.motions.is_moving_down()) or
+                (self.motions.get_direction() == 'CW' and not self.motions.is_moving_down())):
             self.physics["roll"] = -int(np.round(self.imageRows[0].shape[1] * (ROW_ROTATION_OVERLAP_RATIO - 1)))
-
-        if self.motions.get_direction() == 'CCW' and self.motions.is_moving_down():
-            self.physics["first_frame"] = (-self.physics["shift"] + SEARCH_SPACE_SIZE[1], SEARCH_SPACE_SIZE[0])
-        elif self.motions.get_direction() == 'CCW' and not self.motions.is_moving_down():
-            self.physics["first_frame"] = (SEARCH_SPACE_SIZE[1], SEARCH_SPACE_SIZE[0])
-        elif self.motions.get_direction() == 'CW' and self.motions.is_moving_down():
-            self.physics["first_frame"] = (-self.physics["shift"] + SEARCH_SPACE_SIZE[1], -self.physics["roll"] + SEARCH_SPACE_SIZE[0])
-        elif self.motions.get_direction() == 'CW' and not self.motions.is_moving_down():
-            self.physics["first_frame"] = (SEARCH_SPACE_SIZE[1], -self.physics["roll"] + SEARCH_SPACE_SIZE[0])
+            self.physics["first_frame"] = (self.physics["shift"] + SEARCH_SPACE_SIZE[1], SEARCH_SPACE_SIZE[0])
+        elif ((self.motions.get_direction() == 'CCW' and not self.motions.is_moving_down()) or
+              (self.motions.get_direction() == 'CW' and self.motions.is_moving_down())):
+            self.physics["roll"] = int(np.round(self.imageRows[0].shape[1] * (ROW_ROTATION_OVERLAP_RATIO - 1)))
+            self.physics["first_frame"] = (self.physics["shift"] + SEARCH_SPACE_SIZE[1], self.physics["roll"] + SEARCH_SPACE_SIZE[0])
 
         print(f"Physics: {self.physics}\n")
 
@@ -231,22 +244,31 @@ class ImageRowStitcher:
 
         shift_fixes = []
         shift_seeds = []
+        mi_gains = []
 
         for i in tqdm(range(len(self.imageRows) - 1), total=(len(self.imageRows) - 1),
                       desc="Computing positions for stitching"):
             self.imgA = self.imageRows[i]
             self.imgB = self.imageRows[i + 1]
-            self.seed_position = np.array([first_frame, [first_frame[0] + scan_shift, first_frame[1] + roll]]).astype(int)
+            self.seed_position = np.array([first_frame, [first_frame[0] - scan_shift, first_frame[1] - roll]]).astype(int)
             shift_seeds.append(self.seed_position)
             if np.any(np.isnan(self.imgA)) or np.any(np.isnan(self.imgB)):
                 print("One of the input images contains NaN values.")
+            initial_mi = -self.to_minimize((0, 0))
             result = minimize(self.to_minimize, x0=np.array([0, 0]), method='Powell',
                               bounds=[(-SEARCH_SPACE_SIZE[1], SEARCH_SPACE_SIZE[1]),
                                       (-SEARCH_SPACE_SIZE[0], SEARCH_SPACE_SIZE[0])],
-                              options={'xtol': XTOL, 'ftol': FTOL})
+                              options={'xtol': XTOL, 'ftol': FTOL, 'disp': TESTING_MODE})
             shift_fixes.append(result.x)
 
+            optimized_mi = -result.fun
+            mi_gain = (optimized_mi / initial_mi - 1) * 100
+            mi_gains.append(mi_gain)
+
         self.per_row_shift = np.array([seed[1, :] - seed[0, :] + fix for seed, fix in zip(shift_seeds, shift_fixes)])
+
+        if TESTING_MODE:
+            print(f"MI Gain mean: {np.mean(mi_gains)}±{np.std(mi_gains)}")
 
         print(f"Calculated: per row shift\n"
               f"{self.per_row_shift}")
@@ -267,7 +289,7 @@ class ImageRowStitcher:
         double_image = np.concatenate([array, array], axis=1)
         interp = RegularGridInterpolator(
             (np.arange(double_image.shape[0]), np.arange(double_image.shape[1])),
-            double_image
+            double_image, method='cubic'
         )
         if shift > 0:
             y = np.arange(shift, shift + array.shape[1] - 0.5)
@@ -293,7 +315,7 @@ class ImageRowStitcher:
         """
         to_grid = [self.rolledImageRows[0]]
         real_shift = [0]
-        for image, shift in tqdm(zip(self.rolledImageRows[1:], np.cumsum(-self.per_row_shift[:, 0])), total=self.per_row_shift.shape[0], desc="Stitching image"):
+        for image, shift in tqdm(zip(self.rolledImageRows[1:], np.cumsum(self.per_row_shift[:, 0])), total=self.per_row_shift.shape[0], desc="Stitching image"):
             if TESTING_MODE:
                 image[0, :] = 0
                 image[-1, :] = 0

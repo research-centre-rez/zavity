@@ -1,13 +1,14 @@
+import math
 import os.path
 import pickle
 import cv2
-cv2.setNumThreads(cv2.getNumberOfCPUs())
 import numpy as np
 import pandas as pd
 from scipy.stats import stats
 from tqdm.auto import tqdm
 
-from config.config import MOTION_SAMPLING, MOTION_DOWNSCALE, ROW_ROTATION_OVERLAP_RATIO, LOAD_VIDEO_TO_RAM, OUTPUT_FOLDER
+from config.config import (N_CPUS, MOTION_SAMPLING, MOTION_DOWNSCALE, ROW_ROTATION_OVERLAP_RATIO, LOAD_VIDEO_TO_RAM,
+                           OUTPUT_FOLDER, VERBOSE)
 
 
 class VideoMotion:
@@ -38,7 +39,7 @@ class VideoMotion:
     height: int
     video_file_path: str
     video_name: str
-    frames_per_360: int
+    frames_per_360: []
     cw: bool
     frames: np.ndarray
 
@@ -50,10 +51,12 @@ class VideoMotion:
             video_file_path (str): Path to the input video file.
             intervals (list): List of intervals with vertical computed during video preprocessing.
         """
+        cv2.setNumThreads(N_CPUS)
         self.speeds = {}
         self.stats = {}
         self.motion_directions = []
         self.motion_positions = []
+        self.frames_per_360 = []
         self.intervals = np.array(intervals)
         if LOAD_VIDEO_TO_RAM:
             self.frames = frames
@@ -121,7 +124,6 @@ class VideoMotion:
             print(f"Horizontal speed: {self.speeds['horizontal']}±{self.stats['horizontal_speed_std']}\n"
                   f"Vertical shift: {self.speeds['vertical_shift']}±{self.stats['vertical_shift_std']}\n"
                   f"Clockwise: {self.get_direction()}\n"
-                  f"Portrait: {self.is_portrait()}\n"
                   f"Moving down: {self.is_moving_down()}\nLoaded\n")
             self.frames_per_360 = np.load(self._dump_path("frames_per_360"))
             print(f"Frames per 360: {self.frames_per_360} Loaded")
@@ -213,7 +215,7 @@ class VideoMotion:
                 good_new = p1[st == 1]
                 good_old = corners[st == 1]
                 if good_new.shape[0] > 0:
-                    movement_direction = np.mean(good_new - good_old, axis=0)
+                    movement_direction = np.median(good_new - good_old, axis=0)
                     max_pos = np.argmax(np.abs(movement_direction))
                     self.motion_positions.append((i,
                                                   self.motion_positions[-1][1] + movement_direction[0],
@@ -247,6 +249,35 @@ class VideoMotion:
             # Now update the previous frame and previous points
             prev_frame = frame
 
+        if VERBOSE:
+            self.plot_motion_trajectory()
+
+    def plot_motion_trajectory(self, start=0, end=4000):
+        """
+        Plots the cumulative horizontal and vertical motion over time
+        and saves the result to the specified path.
+        """
+        if not hasattr(self, "motion_positions") or len(self.motion_positions) == 0:
+            print("No motion data found. Run compute_motion() first.")
+            return
+
+        # Extract frame indices and displacements
+        frame_indices = [entry[0] for entry in self.motion_positions[:4000]]
+        horizontal_shifts = [entry[1] for entry in self.motion_positions[:4000]]
+        vertical_shifts = [entry[2] for entry in self.motion_positions[:4000]]
+
+        # Plot
+        from matplotlib import pyplot as plt
+        plt.figure(figsize=(10, 4))
+        plt.plot(frame_indices, horizontal_shifts, label="Horizontal Displacement", color="blue")
+        plt.plot(frame_indices, vertical_shifts, label="Vertical Displacement", color="red")
+        plt.xlabel("Frame Index")
+        plt.ylabel("Cumulative Displacement (pixels)")
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(os.path.join(OUTPUT_FOLDER, "motion.png"))
+        plt.close()
+
     def get_intervals(self):
         """
         Retrieves motion intervals.
@@ -260,10 +291,7 @@ class VideoMotion:
         """
         Computes horizontal and vertical speeds from the detected motion.
         """
-        if self.is_portrait():
-            columns = ["frame_ID", "y_shift", "x_shift"]
-        else:
-            columns = ["frame_ID", "x_shift", "y_shift"]
+        columns = ["frame_ID", "x_shift", "y_shift"]
         df = pd.DataFrame(self.motion_positions, columns=columns)
         df["x_shift_diff"] = df["x_shift"].diff()
         df.loc[0, "x_shift_diff"] = df["x_shift"].iloc[0]
@@ -294,7 +322,6 @@ class VideoMotion:
             f"Horizontal speed: {self.speeds['horizontal']}±{self.stats['horizontal_speed_std']}\n"
             f"Vertical shift: {self.speeds['vertical_shift']}±{self.stats['vertical_shift_std']}\n"
             f"Clockwise: {self.get_direction()}\n"
-            f"Portrait: {self.is_portrait()}\n"
             f"Moving down: {self.is_moving_down()}\nCalculated\n")
 
     def get_horizontal_speed(self):
@@ -340,19 +367,7 @@ class VideoMotion:
         Returns:
             str: "CCW" (counter-clockwise) or "CW" (clockwise).
         """
-        return "CCW" if (self.speeds['horizontal'] > 0 and not self.is_portrait()) or (
-                self.speeds['horizontal'] < 0 and self.is_portrait()) else "CW"
-
-    def is_portrait(self):
-        """
-        Checks if the video has a portrait orientation.
-
-        Returns:
-            bool: True if the video is portrait, False otherwise.
-        """
-        # Uncomment for automatic detection based on video dimensions
-        # return self.video_capture.get(cv2.CAP_PROP_FRAME_WIDTH) < self.video_capture.get(cv2.CAP_PROP_FRAME_HEIGHT)
-        return False
+        return "CCW" if self.speeds['horizontal'] > 0 else "CW"
 
     def get_inverted_intervals(self):
         """
@@ -398,24 +413,25 @@ class VideoMotion:
 
                 p1, st, err = cv2.calcOpticalFlowPyrLK(a, b, corners, None, **lk_params)
 
-                # st = (st == 1) & (err < err_threshold)
                 p1 = p1[st == 1]
                 p0 = corners[st == 1]
 
-                move = np.mean(p1 - p0, axis=0)
+                move = np.median(p1 - p0, axis=0)
 
                 samples.append(move[0])
 
             results.append(np.median(samples))
 
-        self.frames_per_360 = np.ceil(frame_shift + np.mean(results) / abs(self.speeds['horizontal'])).astype(int)
-        print(f"Frames per 360: {self.frames_per_360} calculated from frame_shift: {frame_shift}")
+        results = np.array(results)
+        self.frames_per_360 = np.ceil(frame_shift + results / abs(self.speeds['horizontal'])).astype(int)
+        std_over_rows = np.std(results) / abs(self.speeds['horizontal'])
+        print(f"Frames per 360: {self.frames_per_360}±{std_over_rows} calculated from frame_shift: {frame_shift}")
 
-    def get_frames_per360(self):
+    def get_frames_per360(self, i):
         """
         Retrieves the number of frames required for a 360-degree rotation.
 
         Returns:
             int: Frames per 360-degree rotation.
         """
-        return self.frames_per_360
+        return self.frames_per_360[i]

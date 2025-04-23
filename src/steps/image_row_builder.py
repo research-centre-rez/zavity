@@ -1,25 +1,26 @@
 import math
 import os
 import cv2
-cv2.setNumThreads(cv2.getNumberOfCPUs())
 import imageio.v3 as iio
 import numpy as np
-from matplotlib import pyplot as plt
+from matplotlib import pyplot as plt, patches
 from scipy.ndimage import gaussian_filter1d
 from scipy.optimize import curve_fit
 from scipy.signal import find_peaks
+from sklearn.metrics import r2_score
 from tqdm.auto import tqdm
 
-from config.config import TESTING_MODE, BLENDED_PIXELS_PER_FRAME, BLENDED_PIXELS_SHIFT, SINUSOID_SAMPLING, \
+from config.config import N_CPUS, TESTING_MODE, BLENDED_PIXELS_PER_FRAME, BLENDED_PIXELS_SHIFT, SINUSOID_SAMPLING, \
     IMAGE_REPEATS, LOAD_VIDEO_TO_RAM, OUTPUT_FOLDER
 from steps.video_camera_motion import VideoMotion
 
 
-class Constructor:
+class ImageRowBuilder:
     frames: np.ndarray
     motions: VideoMotion
 
     def __init__(self, frames, motions, intervals, video_file_path):
+        cv2.setNumThreads(N_CPUS)
         self.motions = motions
         self.intervals = intervals
         self.video_file_path = video_file_path
@@ -42,13 +43,19 @@ class Constructor:
         rows = []
         for i, interval in enumerate(self.intervals):
             mn, mx = interval
-            start = mn + (mx - mn) // 2 - self.motions.get_frames_per360() // 2
-            end = start + self.motions.get_frames_per360()
+            start = mn + (mx - mn) // 2 - self.motions.get_frames_per360(i) // 2
+            end = start + self.motions.get_frames_per360(i)
             file_path = os.path.join(OUTPUT_FOLDER,
                                      os.path.splitext(os.path.basename(self.video_file_path))[0] + f"-oio-{i}.png")
             if not os.path.isfile(file_path):
-                row = self.construct_row(int(start), int(end))
+                row = self.construct_row(int(start), int(end), i)
                 rows.append(row)
+
+        if TESTING_MODE:
+            for i, row in enumerate(rows):
+                file_path = os.path.join(OUTPUT_FOLDER,
+                                         os.path.splitext(os.path.basename(self.video_file_path))[0] + f"-oio-{i}-pre_sin.png")
+                iio.imwrite(file_path, row.astype(np.uint8))
 
         rows = self.remove_sin_transform(rows)
 
@@ -79,10 +86,31 @@ class Constructor:
             elif not moving_down and j == len(images) - 1:
                 image = image[:-(image.shape[0] // 4), :]
 
+            stripe_width = 100
+
+            if TESTING_MODE and j == 1:
+                image_crop = image[:, :image.shape[0]]
+
+                center_x = image.shape[0] // 2 - stripe_width // 2
+
+                fig, ax = plt.subplots(figsize=(10, 8))
+                ax.imshow(image_crop, cmap="gray")
+
+                rect1 = patches.Rectangle((center_x-10, 0), stripe_width, image.shape[0], linestyle='--', alpha=0.7,
+                                          edgecolor='red', facecolor='none', label='Left Stripe')
+                ax.add_patch(rect1)
+                rect2 = patches.Rectangle((center_x+10, 0), stripe_width, image.shape[0], linestyle='--', alpha=0.7,
+                                          edgecolor='blue', facecolor='none', label='Right Stripe')
+                ax.add_patch(rect2)
+                ax.set_xlabel("X position")
+                ax.set_ylabel("Y position")
+                ax.legend()
+                plt.tight_layout()
+                plt.savefig(os.path.join(OUTPUT_FOLDER, "fig_stripe_highlight.png"))
+
             image = np.hstack((image,) * IMAGE_REPEATS)
 
             # print(image.shape)
-            stripe_width = 100
             movements = []
 
             for i in range(0, image.shape[1] - stripe_width - SINUSOID_SAMPLING, SINUSOID_SAMPLING):
@@ -91,16 +119,30 @@ class Constructor:
                 right_stripe = image[:, i + SINUSOID_SAMPLING:stripe_width + i + SINUSOID_SAMPLING]
 
                 # Sum pixel intensities along the x-axis
-                left_sum = np.sum(left_stripe, axis=1)
-                right_sum = np.sum(right_stripe, axis=1)
+                left_profile = np.sum(left_stripe, axis=1)
+                right_profile = np.sum(right_stripe, axis=1)
 
-                left_sum = gaussian_filter1d(left_sum, sigma=19)
-                right_sum = gaussian_filter1d(right_sum, sigma=19)
+                left_profile_smoothed = gaussian_filter1d(left_profile, sigma=19)
+                right_profile_smoothed = gaussian_filter1d(right_profile, sigma=19)
 
                 distance = 150
                 # Detect peaks
-                peaks_left, _ = find_peaks(left_sum, distance=distance)
-                peaks_right, _ = find_peaks(right_sum, distance=distance)
+                peaks_left, _ = find_peaks(left_profile_smoothed, distance=distance)
+                peaks_right, _ = find_peaks(right_profile_smoothed, distance=distance)
+
+                if TESTING_MODE and j == 1 and i == center_x-10:
+                    plt.figure(figsize=(10, 5))
+                    plt.plot(left_profile, label="Raw Profile of Left Stripe", color='red', alpha=0.7)
+                    plt.plot(right_profile, label="Raw Profile of Right Stripe", color='blue', alpha=0.7)
+                    plt.plot(left_profile_smoothed, label="Smoothed Profile of Left Stripe", color='red', alpha=0.7, linestyle="--")
+                    plt.plot(right_profile_smoothed, label="Smoothed Profile of Right Stripe", color='blue', alpha=0.7, linestyle="--")
+                    plt.plot(peaks_left, left_profile_smoothed[peaks_left], "rx", alpha=0.6, label="Detected Peaks of Left Stripe")
+                    plt.plot(peaks_right, right_profile_smoothed[peaks_right], "bx", alpha=0.6, label="Detected Peaks of Right Stripe")
+                    plt.xlabel("Y position")
+                    plt.ylabel("Sum of Intensities")
+                    plt.legend()
+                    plt.tight_layout()
+                    plt.savefig(os.path.join(OUTPUT_FOLDER, "fig_peaks_profile.png"))
 
                 try:
                     if peaks_left.shape[0] > peaks_right.shape[0]:
@@ -126,9 +168,22 @@ class Constructor:
                     movements.append(movement)
                 except:
                     movements.append(movements[-1])
-                    print(f"Uncomparable peaks for image {j}, column {i}, {len(peaks_left)} vs {len(peaks_right)}")
+                    if TESTING_MODE:
+                        print(f"Uncomparable peaks for image {j}, column {i}, {len(peaks_left)} vs {len(peaks_right)}")
 
-            movements_per_image.append(np.cumsum(movements))
+            cumulative = np.cumsum(movements)
+
+            if TESTING_MODE and j == 1:
+
+                plt.figure(figsize=(10, 5))
+                plt.plot(cumulative)
+                plt.xlabel("Stripe Index")
+                plt.ylabel("Cumulative Vertical Shift [px]")
+                plt.grid(True)
+                plt.tight_layout()
+                plt.savefig(os.path.join(OUTPUT_FOLDER, "fig_cumulative_shift.png"))
+
+            movements_per_image.append(cumulative)
 
         return movements_per_image
 
@@ -232,11 +287,35 @@ class Constructor:
             upper_bounds = [max(max_m, -min_m), np.pi, +100, 0.1]
 
             try:
-                params, _ = curve_fit(custom_rotated_sinusoid, x, movements, p0=initial_guesses,
+                params, pcov = curve_fit(custom_rotated_sinusoid, x, movements, p0=initial_guesses,
                                       bounds=(lower_bounds, upper_bounds), method='trf', maxfev=5000)
             except RuntimeError as e:
                 print(f"Fit failed for index {i}: {e}")
                 continue  # or fill with default values if needed
+
+            if TESTING_MODE:
+                y_fit = custom_rotated_sinusoid(x, *params)
+                r2 = r2_score(movements, y_fit)
+                print(f"R² score of fit: {r2:.4f}")
+                # Compute residuals
+                residuals = movements - y_fit
+                print(f"Mean residual: {np.mean(residuals):.4f}")
+                print(f"Std of residuals: {np.std(residuals):.4f}")
+
+                param_errors = np.sqrt(np.diag(pcov))
+
+                for name, value, err in zip(["A", "C", "D"], params, param_errors):
+                    print(f"{name} = {value:.4f} ± {err:.4f}")
+
+                plt.figure()
+                plt.plot(x, residuals, label="Residuals")
+                plt.axhline(0, color="black", linestyle="--")
+                plt.title("Fit Residuals")
+                plt.xlabel("X")
+                plt.ylabel("Error")
+                plt.grid(True)
+                plt.tight_layout()
+                plt.savefig(os.path.join(OUTPUT_FOLDER, "fig_residuals.png"))
 
             A, C, D, theta = params
             paramses.append((A, freq, C, D, theta))
@@ -320,6 +399,7 @@ class Constructor:
     def construct_row(self,
                       start: int,
                       end: int,
+                      i: int,
                       blended_pixels_per_frame=BLENDED_PIXELS_PER_FRAME,
                       blended_pixels_shift=BLENDED_PIXELS_SHIFT):
         """
@@ -340,19 +420,10 @@ class Constructor:
         frame_size = (self.width, self.height)
 
         shift_per_frame = self.motions.get_horizontal_speed()
-        frames_per_360_deg = self.motions.get_frames_per360()
+        frames_per_360_deg = self.motions.get_frames_per360(i)
         rotation = self.motions.is_portrait()
         direction = self.motions.get_direction()
 
-        # pixel intensity accumulator
-        frame_shift_to_pixels_total = math.ceil((frames_per_360_deg + blended_pixels_per_frame) * shift_per_frame)
-        # frame_shift_to_pixels_total = np.ceil((end-start) * shift_per_frame + blended_pixels_per_frame).astype(int)
-        # print(frame_shift_to_pixels_total, shift_per_frame)
-        row_image = np.zeros(
-            (frame_size[0],
-             frame_shift_to_pixels_total))
-        # weight matrix for the accumulator
-        weight_matrix = np.zeros(row_image.shape)
 
         if rotation:
             image_part = self.width
@@ -364,14 +435,22 @@ class Constructor:
         else:
             getFrame = self.getFrameFromVidCap
 
-        offset = start - blended_pixels_per_frame // 2
+        offset = max(0, math.ceil(start - (blended_pixels_per_frame // 2) / shift_per_frame))
+        n_frames = math.ceil(frames_per_360_deg + (blended_pixels_per_frame - 1) / shift_per_frame)
 
-        for frameNo in tqdm(range(0, int(end - start + blended_pixels_per_frame // 2)), desc="Building row image"):
+        frame_shift_to_pixels_total = math.ceil(n_frames * shift_per_frame) + (blended_pixels_per_frame - 1) * 2
+        row_image = np.zeros(
+            (frame_size[0],
+             frame_shift_to_pixels_total))
+
+        weight_matrix = np.zeros(row_image.shape)
+
+        for frameNo in tqdm(range(0, n_frames), desc="Building row image"):
             image = getFrame(offset + frameNo)  # shape (h, w), grayscale
             if rotation:
                 image = cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE)
 
-            shift = (row_image.shape[1] - shift_per_frame * frameNo - frame_size[1] // 2) if direction == "CCW" else (
+            shift = (row_image.shape[1] - shift_per_frame * frameNo - blended_pixels_per_frame) if direction == "CCW" else (
                     shift_per_frame * frameNo)
             shift_partial = shift % 1
             shift_matrix = np.float32([
@@ -381,18 +460,26 @@ class Constructor:
 
             aligned_image = cv2.warpAffine(image, shift_matrix, (frame_size[1] + 1, frame_size[0]))
 
-            crop_x_start = (math.floor(row_image.shape[1] - shift_per_frame * frameNo - blended_pixels_per_frame)
-                            if direction == "CCW"
-                            else math.floor(shift))
+            crop_x_start = math.floor(shift)
             crop_x_end = max(0, crop_x_start + blended_pixels_per_frame)
 
             # Add the cropped aligned image slice to row_image and weight matrix
-            row_image[:, crop_x_start:crop_x_end] += aligned_image[:, (image_part // 2 - blended_pixels_per_frame // 2) + blended_pixels_shift:
-                                                        (image_part // 2 + blended_pixels_per_frame // 2) + blended_pixels_shift]
+            try:
+                row_image[:, crop_x_start:crop_x_end] += aligned_image[:, (image_part // 2 - blended_pixels_per_frame // 2) + blended_pixels_shift:
+                                                            (image_part // 2 + 1 + blended_pixels_per_frame // 2) + blended_pixels_shift]
+            except:
+                raise Exception(f"Row builder failed on adding slice to row_image.\n"
+                                f"Row image shape{row_image.shape}\n"
+                                f"Crop from {crop_x_start} to {crop_x_end}\n"
+                                f"Adding image of shape {aligned_image.shape}\n"
+                                f"Offset {offset}\n"
+                                f"Frame {frameNo}")
             weight_matrix[:, crop_x_start:crop_x_end] += 1
 
         # Normalize and crop borders
-        row_image = (row_image / weight_matrix)[:, math.ceil(blended_pixels_per_frame * shift_per_frame):-math.ceil(
-            blended_pixels_per_frame * shift_per_frame)]
+        row_size = math.floor(frames_per_360_deg * shift_per_frame)
+        start_col = (row_image.shape[1] - row_size) // 2
+        end_col = start_col + row_size
+        row_image = (row_image / weight_matrix)[:, start_col:end_col]
 
         return np.copy(row_image)

@@ -2,18 +2,18 @@ import os
 import subprocess
 import time
 import cv2
-
-cv2.setNumThreads(cv2.getNumberOfCPUs())
 import matplotlib.pyplot as plt
 import numpy as np
 from typing import LiteralString
 from scipy import stats
-from scipy.signal import savgol_filter
+from scipy.signal import savgol_filter, savgol_coeffs
 from tqdm.auto import tqdm
+import imageio.v3 as iio
 
-from config.config import (Y1, Y2, X1, X2, PREPROCESSOR_SAMPLING, ROT_PER_FRAME, PADDING, OUTPUT_FOLDER,
+from config.config import (N_CPUS, Y1, Y2, X1, X2, PREPROCESSOR_SAMPLING, ROT_PER_FRAME, PADDING, OUTPUT_FOLDER,
                            CALIBRATION_CONFIG_FILE_PATH, RECTIFY, INTERVAL_FILTER_TH, PREPROCESSOR_DOWNSCALE,
-                           SEGMENT_TYPE_TH, REMOVE_ROTATION, VERBOSE, LOAD_VIDEO_TO_RAM, CODEC, EXT)
+                           SEGMENT_TYPE_TH, REMOVE_ROTATION, VERBOSE, LOAD_VIDEO_TO_RAM, CODEC, EXT, PITCH_ANGLE,
+                           TESTING_MODE)
 from scripts.main import timing
 from steps.video_rectifier import _load_calibration_parameters
 
@@ -55,6 +55,7 @@ class VideoPreprocessor:
             video_path (str): Path to the input video file.
             calc_rot_per_frame (bool): Whether to calculate rotation per frame.
         """
+        cv2.setNumThreads(N_CPUS)
         self.video_path = video_path
         self.video_capture = cv2.VideoCapture(self.video_path)
         self.video_name = os.path.basename(self.video_path)
@@ -121,7 +122,7 @@ class VideoPreprocessor:
             if os.path.isfile(self._dump_path('full_angles')):
                 angles = np.load(self._dump_path('full_angles'))
             else:
-                angles = self.compute_angles(step=1)
+                angles = self.compute_angles(step=1, angle_precision=1800, hough_treshold=200)
                 self.dump('full_angles', angles)
             breakpoints = self.compute_breakpoints(angles, filter_length=8, step=1, merge_threshold=10)
             border_breakpoints = self.compute_border_breakpoints(breakpoints, 1)
@@ -154,7 +155,7 @@ class VideoPreprocessor:
                   f"{self.breakpoints}\n")
         else:
             with timing("Compute Breakpoints"):
-                self.breakpoints = self.compute_breakpoints(self.angles, step=PREPROCESSOR_SAMPLING)
+                self.breakpoints = self.compute_breakpoints(self.angles)
             self.dump("breakpoints", self.breakpoints)
             with timing("Compute Border Breakpoints"):
                 border_breakpoints = self.compute_border_breakpoints(self.breakpoints, PREPROCESSOR_SAMPLING)
@@ -174,7 +175,7 @@ class VideoPreprocessor:
         command = [
             "ffmpeg",
             "-y",
-            "-threads", "80",  # Try higher number, like 32 or 48
+            "-threads", f"{N_CPUS}",
             "-i", self.video_path,
             # "-vf",f"crop={w}:{h}:{X1}:{Y1}",
             "-pix_fmt", "gray",
@@ -280,8 +281,35 @@ class VideoPreprocessor:
         if angles is None:
             angles = self.angles
 
+        polyorder = 1
+
+        # Apply filter if length is valid
         if filter_length >= 2:
-            angles = savgol_filter(angles, window_length=filter_length, polyorder=1)
+            angles_filtered = savgol_filter(angles, window_length=filter_length, polyorder=polyorder)
+
+            if TESTING_MODE:
+                plt.figure(figsize=(10, 4))
+                plt.plot(angles, label="Original Angles", linestyle="--", alpha=0.7)
+                plt.plot(angles_filtered, label="Filtered Angles (Savitzky-Golay)", linestyle="--", alpha=0.7)
+                plt.xlabel("Frame Index")
+                plt.ylabel("Estimated Angle [°]")
+                plt.title("Effect of Savitzky-Golay Filtering on Angle Signal")
+                plt.legend()
+                plt.grid(True)
+                plt.tight_layout()
+                plt.savefig(os.path.join(OUTPUT_FOLDER, "filter_effect.png"))
+
+                kernel = savgol_coeffs(window_length=filter_length, polyorder=polyorder)
+                plt.figure(figsize=(6, 3))
+                plt.stem(np.arange(-filter_length // 2 + 1, filter_length // 2 + 1), kernel, basefmt=" ", )
+                plt.title("Savitzky–Golay Filter Kernel")
+                plt.xlabel("Sample offset")
+                plt.ylabel("Weight")
+                plt.grid(True)
+                plt.tight_layout()
+                plt.savefig(os.path.join(OUTPUT_FOLDER, "sg_filter.png"))
+
+            angles = angles_filtered
 
         derivative = np.diff(angles)
         threshold = threshold * step
@@ -538,7 +566,7 @@ class VideoPreprocessor:
         else:
             start, end = 0, 999999
 
-        angle = float(self.compute_angles(start, start + 1, 1, 1800, 200, False)[0])
+        angle = float(self.compute_angles(start, start + 1, 1, 1800, 200, False)[0]) + PITCH_ANGLE
 
         if LOAD_VIDEO_TO_RAM:
             getFrame = self.getFrameFromRAM
@@ -581,8 +609,11 @@ class VideoPreprocessor:
 
             start_time = time.time()
             rotated_image = cv2.warpAffine(
-                src=frame, M=rotate_matrix, dsize=(frame.shape[1], frame.shape[0]))[PADDING:Y2 - Y1 + PADDING,
-                            PADDING:X2 - X1 + PADDING]
+                src=frame,
+                M=rotate_matrix,
+                dsize=(frame.shape[1], frame.shape[0]),
+                flags=cv2.INTER_CUBIC
+            )[PADDING:Y2 - Y1 + PADDING, PADDING:X2 - X1 + PADDING]
             time_rotation += time.time() - start_time
 
             start_time = time.time()
