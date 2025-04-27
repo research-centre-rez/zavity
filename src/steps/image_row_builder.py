@@ -303,8 +303,8 @@ class ImageRowBuilder:
 
                 param_errors = np.sqrt(np.diag(pcov))
 
-                for name, value, err in zip(["A", "C", "D"], params, param_errors):
-                    logging.debug(f"{name} = {value:.4f} ± {err:.4f}")
+                for name, err in zip(["A", "C", "D"], param_errors):
+                    logging.debug(f"Standard error {name}: {err:.4f}")
 
                 plt.figure()
                 plt.plot(x, residuals, label="Residuals")

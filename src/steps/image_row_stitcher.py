@@ -289,7 +289,18 @@ class ImageRowStitcher:
             result = minimize(self.to_minimize, x0=np.array([0, 0]), method='Powell',
                               bounds=[(-SEARCH_SPACE_SIZE[0], SEARCH_SPACE_SIZE[0]),
                                       (-SEARCH_SPACE_SIZE[1], SEARCH_SPACE_SIZE[1])],
-                              options={'xtol': XTOL, 'ftol': FTOL, 'disp': TESTING_MODE})
+                              options={'xtol': XTOL, 'ftol': FTOL})
+            logging.debug("=" * 50)
+            logging.debug(f"Result of position computing of row {i} and row {i+1}")
+            if result.success:
+                logging.debug("Optimization terminated successfully.")
+            else:
+                logging.debug(f"Optimization failed: {result.message}")
+
+            logging.debug(f"Current function value: {result.fun:.6f}")
+            logging.debug(f"Iterations: {result.nit}")
+            logging.debug(f"Function evaluations: {result.nfev}")
+            logging.debug("=" * 50)
             shift_fixes.append(result.x)
 
             optimized_score = -result.fun
