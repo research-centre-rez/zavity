@@ -1,4 +1,3 @@
-import math
 import os.path
 import pickle
 import cv2
@@ -39,7 +38,7 @@ class VideoMotion:
     height: int
     video_file_path: str
     video_name: str
-    frames_per_360: []
+    frames_per_360: int
     cw: bool
     frames: np.ndarray
 
@@ -56,7 +55,6 @@ class VideoMotion:
         self.stats = {}
         self.motion_directions = []
         self.motion_positions = []
-        self.frames_per_360 = []
         self.intervals = np.array(intervals)
         if LOAD_VIDEO_TO_RAM:
             self.frames = frames
@@ -378,6 +376,9 @@ class VideoMotion:
         """
         return np.array([[self.intervals[i - 1][1], self.intervals[i][0]] for i in range(1, len(self.intervals))])
 
+    def get_average_horizontal_shift(self):
+        return np.mean(self.intervals[:, 1] - self.intervals[:, 0]) * self.get_horizontal_speed()
+
     def compute_frames_per360(self):
         """
         Calculates the number of frames required for a 360-degree rotation.
@@ -398,14 +399,14 @@ class VideoMotion:
                 a = getFrame(frame)
                 b = getFrame(frame + frame_shift)
 
-                feature_params = dict(maxCorners=100,
+                feature_params = dict(maxCorners=50,
                                       qualityLevel=0.1,
-                                      minDistance=7,
+                                      minDistance=50,
                                       blockSize=7)
 
-                lk_params = dict(winSize=(15, 15),
-                                 maxLevel=2,
-                                 criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 10, 0.03))
+                lk_params = dict(winSize=(50, 50),
+                                 maxLevel=3,
+                                 criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.1))
 
                 err_threshold = 9
 
@@ -418,20 +419,23 @@ class VideoMotion:
 
                 move = np.median(p1 - p0, axis=0)
 
-                samples.append(move[0])
+                if self.get_direction() == 'CW':
+                    samples.append(move[0])
+                else:
+                    samples.append(-move[0])
 
             results.append(np.median(samples))
 
-        results = np.array(results)
-        self.frames_per_360 = np.ceil(frame_shift + results / abs(self.speeds['horizontal'])).astype(int)
+        result = np.mean(results)
+        self.frames_per_360 = np.ceil(frame_shift + result / abs(self.speeds['horizontal'])).astype(int)
         std_over_rows = np.std(results) / abs(self.speeds['horizontal'])
-        print(f"Frames per 360: {self.frames_per_360}±{std_over_rows} calculated from frame_shift: {frame_shift}")
+        print(f"Frames per 360: {frame_shift + result / abs(self.speeds['horizontal'])}±{std_over_rows} calculated from frame_shift: {frame_shift}")
 
-    def get_frames_per360(self, i):
+    def get_frames_per360(self):
         """
         Retrieves the number of frames required for a 360-degree rotation.
 
         Returns:
             int: Frames per 360-degree rotation.
         """
-        return self.frames_per_360[i]
+        return self.frames_per_360

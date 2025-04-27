@@ -43,8 +43,8 @@ class ImageRowBuilder:
         rows = []
         for i, interval in enumerate(self.intervals):
             mn, mx = interval
-            start = mn + (mx - mn) // 2 - self.motions.get_frames_per360(i) // 2
-            end = start + self.motions.get_frames_per360(i)
+            start = mn + (mx - mn) // 2 - self.motions.get_frames_per360() // 2
+            end = start + self.motions.get_frames_per360()
             file_path = os.path.join(OUTPUT_FOLDER,
                                      os.path.splitext(os.path.basename(self.video_file_path))[0] + f"-oio-{i}.png")
             if not os.path.isfile(file_path):
@@ -420,15 +420,11 @@ class ImageRowBuilder:
         frame_size = (self.width, self.height)
 
         shift_per_frame = self.motions.get_horizontal_speed()
-        frames_per_360_deg = self.motions.get_frames_per360(i)
-        rotation = self.motions.is_portrait()
+        frames_per_360_deg = self.motions.get_frames_per360()
         direction = self.motions.get_direction()
 
 
-        if rotation:
-            image_part = self.width
-        else:
-            image_part = self.height
+        image_part = self.height
 
         if LOAD_VIDEO_TO_RAM:
             getFrame = self.getFrameFromRAM
@@ -447,8 +443,6 @@ class ImageRowBuilder:
 
         for frameNo in tqdm(range(0, n_frames), desc="Building row image"):
             image = getFrame(offset + frameNo)  # shape (h, w), grayscale
-            if rotation:
-                image = cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE)
 
             shift = (row_image.shape[1] - shift_per_frame * frameNo - blended_pixels_per_frame) if direction == "CCW" else (
                     shift_per_frame * frameNo)

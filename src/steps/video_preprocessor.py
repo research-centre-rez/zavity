@@ -8,7 +8,6 @@ from typing import LiteralString
 from scipy import stats
 from scipy.signal import savgol_filter, savgol_coeffs
 from tqdm.auto import tqdm
-import imageio.v3 as iio
 
 from config.config import (N_CPUS, Y1, Y2, X1, X2, PREPROCESSOR_SAMPLING, ROT_PER_FRAME, PADDING, OUTPUT_FOLDER,
                            CALIBRATION_CONFIG_FILE_PATH, RECTIFY, INTERVAL_FILTER_TH, PREPROCESSOR_DOWNSCALE,
@@ -193,6 +192,7 @@ class VideoPreprocessor:
 
         pipe.stdout.close()
         pipe.wait()
+        self.num_frames = len(self.frames)
 
     def getFrameFromRAM(self, i):
         return self.frames[i]
@@ -217,7 +217,7 @@ class VideoPreprocessor:
         """
         computed_angles = []
         if end is None:
-            end = int(self.video_capture.get(cv2.CAP_PROP_FRAME_COUNT))
+            end = self.num_frames
 
         if LOAD_VIDEO_TO_RAM:
             getFrame = self.getFrameFromRAM
@@ -436,10 +436,10 @@ class VideoPreprocessor:
             else:
                 start_breakpoint = 0
 
-            if end + step < int(self.video_capture.get(cv2.CAP_PROP_FRAME_COUNT)):
+            if end + step < int(self.num_frames):
                 end_breakpoint = self.refine_breakpoint(end)
             else:
-                end_breakpoint = int(self.video_capture.get(cv2.CAP_PROP_FRAME_COUNT)) - 1
+                end_breakpoint = int(self.num_frames) - 1
 
             refined.append([start_breakpoint, end_breakpoint])
 
@@ -680,7 +680,7 @@ class VideoPreprocessor:
             list: List of filtered intervals.
         """
         start = 0
-        end = self.video_capture.get(cv2.CAP_PROP_FRAME_COUNT)
+        end = self.num_frames
         inverted = []
 
         # Step 1: Generate inverted intervals

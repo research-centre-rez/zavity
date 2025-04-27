@@ -17,7 +17,7 @@ X2 = 2650  #X2+PADDING cant be bigger then 3840
 PADDING = 300
 PREPROCESSOR_DOWNSCALE = 4
 SEGMENT_TYPE_TH = 0.04
-ROT_PER_FRAME = 0.12733934740581357  # 0.12735436683938242  # 0.12734272843513264
+ROT_PER_FRAME = 0.12735436683938242  # 0.12734272843513264
 RECTIFY = True
 CALIBRATION_CONFIG_FILE_PATH = 'src/config'
 CODEC = 'X264'  # 'mp4v' 'MJPG'
@@ -38,6 +38,6 @@ SINUSOID_SAMPLING = 10
 IMAGE_REPEATS = 10
 
 # RowStitcher config
-SEARCH_SPACE_SIZE = (36, 36)  # of shift correction between pairs of row images (roll, shift)
-XTOL = 1e-3
-FTOL = 1e-5
+SEARCH_SPACE_SIZE = (36, 36)  # of shift correction between pairs of row images (shift, roll)
+XTOL = 1e-1
+FTOL = 1e-2

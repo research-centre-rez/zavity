@@ -7,6 +7,7 @@ import imageio.v3 as iio
 import numpy as np
 from scipy.interpolate import RegularGridInterpolator
 from scipy.optimize import minimize
+from skimage.metrics import structural_similarity as ssim
 from tqdm.auto import tqdm
 
 from config.config import SEARCH_SPACE_SIZE, TESTING_MODE, ROW_ROTATION_OVERLAP_RATIO, XTOL, FTOL, OUTPUT_FOLDER, N_CPUS
@@ -178,7 +179,8 @@ class ImageRowStitcher:
         nzs = pxy > 0  # Only non-zero pxy values contribute to the sum
         return np.sum(pxy[nzs] * np.log(pxy[nzs] / px_py[nzs]))
 
-    def extract_images_and_compute_mi(self, shift, imgA, imgB, seed_position, width, height):
+    @staticmethod
+    def extract_images_and_compute_score(shift, imgA, imgB, seed_position, width, height):
         """
         Extracts image regions and computes mutual information.
 
@@ -193,14 +195,30 @@ class ImageRowStitcher:
         Returns:
             float: Negative mutual information.
         """
-        x = np.arange(seed_position[1, 0] + shift[0], seed_position[1, 0] + shift[0] + height - 0.5)
-        y = np.arange(seed_position[1, 1] + shift[1], seed_position[1, 1] + shift[1] + width - 0.5)
+        x = np.arange(
+            seed_position[1, 0] + SEARCH_SPACE_SIZE[0] + shift[0],
+            seed_position[1, 0] + SEARCH_SPACE_SIZE[0] + shift[0] + height - 0.5
+        )
+        y = np.arange(
+            seed_position[1, 1] + SEARCH_SPACE_SIZE[1] + shift[1],
+            seed_position[1, 1] + SEARCH_SPACE_SIZE[1] + shift[1] + width - 0.5
+        )
         xg, yg = np.meshgrid(x, y)
         interp = RegularGridInterpolator((np.arange(imgB.shape[0]), np.arange(imgB.shape[1])), imgB)
-        return -self.mutual_information(
-            imgA[seed_position[0, 0]: seed_position[0, 0] + height,
-            seed_position[0, 1]: seed_position[0, 1] + width].T,
-            interp((xg, yg))
+        try:
+            imgB_interpolated = interp((xg, yg))
+        except Exception:
+            print(seed_position, shift, x.shape, y.shape, imgB.shape)
+
+            raise Exception
+
+        return -ssim(
+            imgA[
+                seed_position[0, 0] + SEARCH_SPACE_SIZE[0]: seed_position[0, 0] + SEARCH_SPACE_SIZE[0] + height,
+                seed_position[0, 1] + SEARCH_SPACE_SIZE[1]: seed_position[0, 1] + SEARCH_SPACE_SIZE[1] + width
+            ].T,
+            imgB_interpolated,
+            data_range=255
         )
 
     def to_minimize(self, x):
@@ -213,12 +231,14 @@ class ImageRowStitcher:
         Returns:
             float: Negative mutual information for given shift.
         """
-        return self.extract_images_and_compute_mi(shift=x, imgA=self.imgA, imgB=self.imgB,
-                                                  seed_position=self.seed_position,
-                                                  width=self.imgA.shape[1] - abs(self.physics["roll"]) -
-                                                        2 * SEARCH_SPACE_SIZE[0],
-                                                  height=self.imgA.shape[0] - abs(self.physics["shift"]) -
-                                                         2 * SEARCH_SPACE_SIZE[1])
+        return self.extract_images_and_compute_score(
+            shift=x,
+            imgA=self.imgA,
+            imgB=self.imgB,
+            seed_position=self.seed_position,
+            height=self.imgA.shape[0] - abs(self.physics["shift"]) - 2 * SEARCH_SPACE_SIZE[0],
+            width=self.imgA.shape[1] - abs(self.physics["roll"]) - 2 * SEARCH_SPACE_SIZE[1]
+        )
 
     def computePositions(self):
         """
@@ -229,12 +249,12 @@ class ImageRowStitcher:
 
         if ((self.motions.get_direction() == 'CCW' and self.motions.is_moving_down()) or
                 (self.motions.get_direction() == 'CW' and not self.motions.is_moving_down())):
-            self.physics["roll"] = -int(np.round(self.imageRows[0].shape[1] * (ROW_ROTATION_OVERLAP_RATIO - 1)))
-            self.physics["first_frame"] = (self.physics["shift"] + SEARCH_SPACE_SIZE[1], SEARCH_SPACE_SIZE[0])
+            self.physics["roll"] = -int(np.round(self.motions.get_average_horizontal_shift() - self.imageRows[0].shape[1]))
+            self.physics["first_frame"] = (self.physics["shift"], 0)
         elif ((self.motions.get_direction() == 'CCW' and not self.motions.is_moving_down()) or
               (self.motions.get_direction() == 'CW' and self.motions.is_moving_down())):
-            self.physics["roll"] = int(np.round(self.imageRows[0].shape[1] * (ROW_ROTATION_OVERLAP_RATIO - 1)))
-            self.physics["first_frame"] = (self.physics["shift"] + SEARCH_SPACE_SIZE[1], self.physics["roll"] + SEARCH_SPACE_SIZE[0])
+            self.physics["roll"] = int(np.round(self.motions.get_average_horizontal_shift() - self.imageRows[0].shape[1])) + 50
+            self.physics["first_frame"] = (self.physics["shift"], self.physics["roll"])
 
         print(f"Physics: {self.physics}\n")
 
@@ -244,7 +264,7 @@ class ImageRowStitcher:
 
         shift_fixes = []
         shift_seeds = []
-        mi_gains = []
+        score_gains = []
 
         for i in tqdm(range(len(self.imageRows) - 1), total=(len(self.imageRows) - 1),
                       desc="Computing positions for stitching"):
@@ -254,21 +274,21 @@ class ImageRowStitcher:
             shift_seeds.append(self.seed_position)
             if np.any(np.isnan(self.imgA)) or np.any(np.isnan(self.imgB)):
                 print("One of the input images contains NaN values.")
-            initial_mi = -self.to_minimize((0, 0))
+            initial_score = -self.to_minimize((0, 0))
             result = minimize(self.to_minimize, x0=np.array([0, 0]), method='Powell',
-                              bounds=[(-SEARCH_SPACE_SIZE[1], SEARCH_SPACE_SIZE[1]),
-                                      (-SEARCH_SPACE_SIZE[0], SEARCH_SPACE_SIZE[0])],
+                              bounds=[(-SEARCH_SPACE_SIZE[0], SEARCH_SPACE_SIZE[0]),
+                                      (-SEARCH_SPACE_SIZE[1], SEARCH_SPACE_SIZE[1])],
                               options={'xtol': XTOL, 'ftol': FTOL, 'disp': TESTING_MODE})
             shift_fixes.append(result.x)
 
-            optimized_mi = -result.fun
-            mi_gain = (optimized_mi / initial_mi - 1) * 100
-            mi_gains.append(mi_gain)
+            optimized_score = -result.fun
+            score_gain = (optimized_score / initial_score - 1) * 100
+            score_gains.append(score_gain)
 
-        self.per_row_shift = np.array([seed[1, :] - seed[0, :] + fix for seed, fix in zip(shift_seeds, shift_fixes)])
+        self.per_row_shift = np.array([seed[0, :] - seed[1, :] - fix for seed, fix in zip(shift_seeds, shift_fixes)])
 
         if TESTING_MODE:
-            print(f"MI Gain mean: {np.mean(mi_gains)}±{np.std(mi_gains)}")
+            print(f"Score Gain mean: {np.mean(score_gains)}±{np.std(score_gains)}")
 
         print(f"Calculated: per row shift\n"
               f"{self.per_row_shift}")
@@ -289,15 +309,19 @@ class ImageRowStitcher:
         double_image = np.concatenate([array, array], axis=1)
         interp = RegularGridInterpolator(
             (np.arange(double_image.shape[0]), np.arange(double_image.shape[1])),
-            double_image, method='cubic'
+            double_image
         )
         if shift > 0:
-            y = np.arange(shift, shift + array.shape[1] - 0.5)
+            y = np.arange(array.shape[1] - shift, 2 * array.shape[1] - shift - 0.5)
         else:
-            y = np.arange(shift + array.shape[1], 2 * array.shape[1] + shift - 0.5)
+            y = np.arange(-shift, array.shape[1] - shift - 0.5)
         x = np.arange(array.shape[0])
         xg, yg = np.meshgrid(x, y)
         return interp((xg, yg)).T
+
+    @staticmethod
+    def signed_mod(val, mod_base):
+        return ((val + mod_base // 2) % mod_base) - mod_base // 2
 
     def rollImageRows(self):
         """
@@ -307,7 +331,7 @@ class ImageRowStitcher:
         for en, row_shift in tqdm(enumerate(np.cumsum(self.per_row_shift[:, 1])), total=self.per_row_shift.shape[0],
                                   desc="Rolling image for stitching"):
             self.rolledImageRows.append(
-                self.real_roll(self.imageRows[en + 1], row_shift % self.imageRows[en + 1].shape[1]))
+                self.real_roll(self.imageRows[en + 1], self.signed_mod(row_shift, self.imageRows[en + 1].shape[1])))
 
     def stitchImageRows(self):
         """
@@ -315,7 +339,8 @@ class ImageRowStitcher:
         """
         to_grid = [self.rolledImageRows[0]]
         real_shift = [0]
-        for image, shift in tqdm(zip(self.rolledImageRows[1:], np.cumsum(self.per_row_shift[:, 0])), total=self.per_row_shift.shape[0], desc="Stitching image"):
+        for image, shift in tqdm(zip(self.rolledImageRows[1:], np.cumsum(self.per_row_shift[:, 0])),
+                                 total=self.per_row_shift.shape[0], desc="Stitching image"):
             if TESTING_MODE:
                 image[0, :] = 0
                 image[-1, :] = 0
