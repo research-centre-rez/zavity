@@ -14,13 +14,6 @@ from steps.image_row_builder import ImageRowBuilder
 from steps.image_row_stitcher import ImageRowStitcher
 from steps.video_camera_motion import VideoMotion
 
-# Configure logging
-logging.basicConfig(
-    filename=os.path.join(OUTPUT_FOLDER, "time.log"),  # Log file name
-    level=logging.INFO,  # Set log level to INFO
-    format="%(asctime)s - %(levelname)s - %(message)s",  # Log format
-)
-
 
 @contextmanager
 def timing(name):
@@ -29,20 +22,38 @@ def timing(name):
     end = timer()
     duration = end - start
     message = f"{name}: {duration:.4f} seconds"
-    print(message)
-    logging.info(message)
+    logging.debug(message)
+
+
+def configure_logging(filename):
+    log_formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+
+    # File handler
+    file_handler = logging.FileHandler(os.path.join(OUTPUT_FOLDER, f"{filename}.log"))
+    file_handler.setFormatter(log_formatter)
+    file_handler.setLevel(logging.DEBUG)
+
+    # Console handler
+    console_handler = logging.StreamHandler()
+    console_handler.setFormatter(log_formatter)
+    console_handler.setLevel(logging.INFO)
+
+    # Configure root logger
+    logging.basicConfig(level=logging.INFO, handlers=[file_handler, console_handler])
 
 
 def process_single_video(video_name, calc_rot_per_frame):
     video_path = os.path.join(INPUT_FOLDER, video_name)
-    print(f"Processing single video: {video_path}. Output will be saved to {OUTPUT_FOLDER}.")
+    configure_logging(video_name)
+    logging.info(f"Processing single video: {video_path}. Output will be saved to {OUTPUT_FOLDER}.")
     process_video(video_path, calc_rot_per_frame)
 
 
 def process_multiple_videos(folder_path, calc_rot_per_frame):
-    print(f"Processing multiple videos in folder: {folder_path}. Output will be saved to {OUTPUT_FOLDER}.")
+    logging.info(f"Processing multiple videos in folder: {folder_path}. Output will be saved to {OUTPUT_FOLDER}.")
     # List all video files in the specified folder
     for filename in os.listdir(folder_path):
+        configure_logging(filename)
         video_path = os.path.join(folder_path, filename)
         if os.path.isfile(video_path):
             process_video(video_path, calc_rot_per_frame)
@@ -70,7 +81,7 @@ def process_video(video_path, calc_rot_per_frame):
             stitcher = ImageRowStitcher(rows, motions, video_path)
             stitcher.process()
 
-    # print("OIO done")
+    logging.info("OIO done")
 
 
 if __name__ == "__main__":
@@ -88,11 +99,9 @@ if __name__ == "__main__":
 
     # Process based on mode
     if args.mode == "single":
-        # Check if path to a single video is provided
-        video_name = args.video_name
-        if not video_name:
+        if not args.video_name:
             raise ValueError("Please provide --path_to_video for single video processing mode.")
-        process_single_video(video_name, args.calc_rot_per_frame)
+        process_single_video(args.video_name, args.calc_rot_per_frame)
 
     elif args.mode == "multiple":
         # Check if path to folder is provided

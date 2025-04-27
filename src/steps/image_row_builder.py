@@ -1,3 +1,4 @@
+import logging
 import math
 import os
 import cv2
@@ -39,7 +40,7 @@ class ImageRowBuilder:
         Returns:
             None
         """
-        print(f"Processing RowBuilder for: {self.video_file_path}\n")
+        logging.info(f"Processing RowBuilder for: {self.video_file_path}\n")
         rows = []
         for i, interval in enumerate(self.intervals):
             mn, mx = interval
@@ -110,7 +111,6 @@ class ImageRowBuilder:
 
             image = np.hstack((image,) * IMAGE_REPEATS)
 
-            # print(image.shape)
             movements = []
 
             for i in range(0, image.shape[1] - stripe_width - SINUSOID_SAMPLING, SINUSOID_SAMPLING):
@@ -168,8 +168,7 @@ class ImageRowBuilder:
                     movements.append(movement)
                 except:
                     movements.append(movements[-1])
-                    if TESTING_MODE:
-                        print(f"Uncomparable peaks for image {j}, column {i}, {len(peaks_left)} vs {len(peaks_right)}")
+                    logging.debug(f"Uncomparable peaks for image {j}, column {i}, {len(peaks_left)} vs {len(peaks_right)}")
 
             cumulative = np.cumsum(movements)
 
@@ -290,22 +289,22 @@ class ImageRowBuilder:
                 params, pcov = curve_fit(custom_rotated_sinusoid, x, movements, p0=initial_guesses,
                                       bounds=(lower_bounds, upper_bounds), method='trf', maxfev=5000)
             except RuntimeError as e:
-                print(f"Fit failed for index {i}: {e}")
+                logging.critical(f"Fit failed for index {i}: {e}")
                 continue  # or fill with default values if needed
 
             if TESTING_MODE:
                 y_fit = custom_rotated_sinusoid(x, *params)
                 r2 = r2_score(movements, y_fit)
-                print(f"R² score of fit: {r2:.4f}")
+                logging.debug(f"R² score of fit: {r2:.4f}")
                 # Compute residuals
                 residuals = movements - y_fit
-                print(f"Mean residual: {np.mean(residuals):.4f}")
-                print(f"Std of residuals: {np.std(residuals):.4f}")
+                logging.debug(f"Mean residual: {np.mean(residuals):.4f}")
+                logging.debug(f"Std of residuals: {np.std(residuals):.4f}")
 
                 param_errors = np.sqrt(np.diag(pcov))
 
                 for name, value, err in zip(["A", "C", "D"], params, param_errors):
-                    print(f"{name} = {value:.4f} ± {err:.4f}")
+                    logging.debug(f"{name} = {value:.4f} ± {err:.4f}")
 
                 plt.figure()
                 plt.plot(x, residuals, label="Residuals")
@@ -379,7 +378,7 @@ class ImageRowBuilder:
             movementses = self.calculate_movements(rows)
             movementses = self.detrend_movements(movementses)
             params = self.fitSin(movementses)
-            print(f"\nParameters for sinusoidal transformation:\n{params}\n")
+            logging.debug(f"\nParameters for sinusoidal transformation:\n{params}\n")
             rows = self.remove_sinusoidal_transformation(rows, params)
 
         return rows
@@ -392,7 +391,8 @@ class ImageRowBuilder:
         success, frame = self.video_capture.read()
 
         if not success or frame is None:
-            print(f"Failed to read frame {i}")
+            logging.critical(f"Failed to read frame {i}")
+            raise IOError(f"Failed to read frame {i}")
 
         return cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 

@@ -1,4 +1,5 @@
 import os
+import logging
 import subprocess
 import time
 import cv2
@@ -80,10 +81,10 @@ class VideoPreprocessor:
             if os.path.isfile(self.get_output_video_file_path()) and os.path.isfile(
                     self._dump_path("borderBreakpoints")):
                 self.borderBreakpoints = np.load(self._dump_path("borderBreakpoints"))
-                print(f"Loaded {self._dump_path('borderBreakpoints')}\n"
-                      f"{self.borderBreakpoints}\n")
+                logging.debug(f"Loaded {self._dump_path('borderBreakpoints')}\n"
+                             f"{self.borderBreakpoints}\n")
             else:
-                print(f"Pre-processing video: {self.video_name}")
+                logging.info(f"Pre-processing video: {self.video_name}")
                 with timing("Load Frames"):
                     self.loadFrames()
                 self.load_or_compute()
@@ -127,19 +128,19 @@ class VideoPreprocessor:
             border_breakpoints = self.compute_border_breakpoints(breakpoints, 1)
             self.plot_angles(angles, breakpoints=breakpoints, border_breakpoints=border_breakpoints)
             self.rotation_per_frame = self.compute_rotation_per_frame(angles, breakpoints, border_breakpoints)
-            print(f"Calculated rotation per frame\n"
-                  f"{self.rotation_per_frame}\n"
-                  f"Precalculated rotation per frame\n"
-                  f"{ROT_PER_FRAME}\n"
-                  f"Difference: {self.rotation_per_frame - ROT_PER_FRAME}\n")
+            logging.debug(f"Calculated rotation per frame\n"
+                         f"{self.rotation_per_frame}\n"
+                         f"Precalculated rotation per frame\n"
+                         f"{ROT_PER_FRAME}\n"
+                         f"Difference: {self.rotation_per_frame - ROT_PER_FRAME}\n")
         else:
             self.rotation_per_frame = ROT_PER_FRAME
-            print(f"Loaded precalculated rotation per frame\n"
-                  f"{self.rotation_per_frame}\n")
+            logging.debug(f"Loaded precalculated rotation per frame\n"
+                         f"{self.rotation_per_frame}\n")
 
         if os.path.isfile(self._dump_path("angles")):
             self.angles = np.load(self._dump_path("angles"))
-            print(f"Loaded {self._dump_path('angles')}\n")
+            logging.debug(f"Loaded {self._dump_path('angles')}\n")
         else:
             with timing("Compute Angles"):
                 self.angles = self.compute_angles()
@@ -147,11 +148,11 @@ class VideoPreprocessor:
 
         if os.path.isfile(self._dump_path("breakpoints")) and os.path.isfile(self._dump_path("borderBreakpoints")):
             self.borderBreakpoints = np.load(self._dump_path("borderBreakpoints"))
-            print(f"Loaded {self._dump_path('borderBreakpoints')}\n"
-                  f"{self.borderBreakpoints}\n")
+            logging.debug(f"Loaded {self._dump_path('borderBreakpoints')}\n"
+                         f"{self.borderBreakpoints}\n")
             self.breakpoints = np.load(self._dump_path("breakpoints"))
-            print(f"Loaded {self._dump_path('breakpoints')}\n"
-                  f"{self.breakpoints}\n")
+            logging.debug(f"Loaded {self._dump_path('breakpoints')}\n"
+                         f"{self.breakpoints}\n")
         else:
             with timing("Compute Breakpoints"):
                 self.breakpoints = self.compute_breakpoints(self.angles)
@@ -202,7 +203,8 @@ class VideoPreprocessor:
         success, frame = self.video_capture.read()
 
         if not success or frame is None:
-            print(f"Failed to read frame {i}")
+            logging.critical(f"Failed to read frame {i}")
+            raise IOError(f"Failed to read frame {i}")
 
         return cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
@@ -242,7 +244,7 @@ class VideoPreprocessor:
             lines = cv2.HoughLinesP(edges, 1, np.pi / angle_precision, hough_treshold,
                                     minLineLength=frame.shape[0] / 2.5, maxLineGap=frame.shape[0] / 3)
             if lines is None:
-                print(f"No lines detected in frame {i}")
+                logging.debug(f"No lines detected in frame {i}")
                 computed_angles.append(45)
                 continue
 
@@ -258,7 +260,7 @@ class VideoPreprocessor:
                 angle_median = np.abs(angle_median)
             computed_angles.append(angle_median)
 
-        print(f"Angles calculated from {start} to {end} with step {step}\n")
+        logging.debug(f"Angles calculated from {start} to {end} with step {step}\n")
         return np.array(computed_angles)
 
     def compute_breakpoints(self, angles=None, filter_length=-1, step=PREPROCESSOR_SAMPLING, threshold=SEGMENT_TYPE_TH,
@@ -328,8 +330,8 @@ class VideoPreprocessor:
 
         breakpoints = np.concatenate([[0], breakpoints, [(len(angles) - 1) * step]])
 
-        print(f"Calculated: Breakpoints\n"
-              f"{breakpoints}\n")
+        logging.debug(f"Calculated: Breakpoint Candidates\n"
+                     f"{breakpoints}\n")
 
         if segment_type_return:
             return breakpoints, segment_type
@@ -412,8 +414,8 @@ class VideoPreprocessor:
             if stats.mode(self.segment_type[breakpoints[i] // step:breakpoints[i + 1] // step])[0] == 0:
                 border_breakpoints.append([breakpoints[i], breakpoints[i + 1]])
 
-        print(f"Calculated: Border Breakpoints\n"
-              f"{np.asarray(border_breakpoints)}\n")
+        logging.info(f"Calculated: Breakpoints\n"
+                     f"{np.asarray(border_breakpoints)}\n")
 
         return np.asarray(border_breakpoints)
 
@@ -443,8 +445,8 @@ class VideoPreprocessor:
 
             refined.append([start_breakpoint, end_breakpoint])
 
-        print(f"Calculated: Refined Border Breakpoints\n"
-              f"{refined}\n")
+        logging.info(f"Calculated: Refined Breakpoints\n"
+                     f"{refined}\n")
 
         return refined
 
@@ -467,13 +469,13 @@ class VideoPreprocessor:
             try:
                 refined_bp = self.get_zero_segment(breakpoints, segment_type)
             except Exception as e:
-                print(f"Error in refinement: {e}")
+                logging.error(f"Error in refinement: {e}")
                 return bp
         else:
-            print(f"No breakpoints found: {breakpoints}")
+            logging.debug(f"No breakpoints found: {breakpoints}")
             return bp
         refined_bp = int(bp - PREPROCESSOR_SAMPLING + refined_bp)
-        print(f"Breakpoint refinement: {bp} -> {refined_bp}")
+        logging.debug(f"Breakpoint refinement: {bp} -> {refined_bp}")
         return refined_bp
 
     @staticmethod
@@ -543,8 +545,8 @@ class VideoPreprocessor:
         plt.savefig(self._dump_path("RPF_function", "png"))
         plt.close()
 
-        print(f"Calculated : RotationPerFrame\n"
-              f"{-a}")
+        logging.info(f"Calculated : Angular Rotation Per Frame\n"
+                     f"{-a}")
 
         return -a
 
@@ -627,13 +629,12 @@ class VideoPreprocessor:
                 if i_row < len(self.borderBreakpoints):
                     start, end = self.borderBreakpoints[i_row]
                 else:
-                    print(f"Reached out of index {i_row}")
+                    logging.warning(f"Reached out of index {i_row}")
 
-        if VERBOSE:
-            print(f"read() {time_read}\n")
-            print(f"remap() {time_remap}\n")
-            print(f"warpAffine() {time_rotation}\n")
-            print(f"write() {time_write}\n")
+        logging.debug(f"read() {time_read}\n")
+        logging.debug(f"remap() {time_remap}\n")
+        logging.debug(f"warpAffine() {time_rotation}\n")
+        logging.debug(f"write() {time_write}\n")
 
     def getProcessedFrames(self):
         return self.processed_frames

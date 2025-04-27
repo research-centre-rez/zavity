@@ -1,3 +1,4 @@
+import logging
 import os.path
 import pickle
 import cv2
@@ -42,7 +43,7 @@ class VideoMotion:
     cw: bool
     frames: np.ndarray
 
-    def __init__(self, frames: np.ndarray,  video_file_path: str, intervals: list):
+    def __init__(self, frames: np.ndarray, video_file_path: str, intervals: list):
         """
         Initializes the VideoMotion class.
 
@@ -114,17 +115,18 @@ class VideoMotion:
             self.compute_motion()
             self.dump("motion_directions", self.motion_directions)
             self.dump("motion_positions", self.motion_positions)
-        if os.path.isfile(self._dump_path("speeds")) and os.path.isfile(self._dump_path("frames_per_360")) and os.path.isfile(self._dump_path("stats")):
+        if os.path.isfile(self._dump_path("speeds")) and os.path.isfile(
+                self._dump_path("frames_per_360")) and os.path.isfile(self._dump_path("stats")):
             with open(self._dump_path("speeds"), 'rb') as fp:
                 self.speeds = pickle.load(fp)
             with open(self._dump_path("stats"), 'rb') as fp:
                 self.stats = pickle.load(fp)
-            print(f"Horizontal speed: {self.speeds['horizontal']}±{self.stats['horizontal_speed_std']}\n"
-                  f"Vertical shift: {self.speeds['vertical_shift']}±{self.stats['vertical_shift_std']}\n"
-                  f"Clockwise: {self.get_direction()}\n"
-                  f"Moving down: {self.is_moving_down()}\nLoaded\n")
+            logging.debug(f"Horizontal speed: {self.speeds['horizontal']}±{self.stats['horizontal_speed_std']}\n"
+                         f"Vertical shift: {self.speeds['vertical_shift']}±{self.stats['vertical_shift_std']}\n"
+                         f"Clockwise: {self.get_direction()}\n"
+                         f"Moving down: {self.is_moving_down()}\nLoaded\n")
             self.frames_per_360 = np.load(self._dump_path("frames_per_360"))
-            print(f"Frames per 360: {self.frames_per_360} Loaded")
+            logging.debug(f"Frames per 360: {self.frames_per_360} Loaded")
         else:
             self.compute()
 
@@ -158,7 +160,7 @@ class VideoMotion:
         """
         Processes motion analysis for the video.
         """
-        print(f"Processing VideoMotion for: {self.video_file_path}\n")
+        logging.info(f"Processing VideoMotion for: {self.video_file_path}\n")
         self.load_or_compute()
 
     def getFrameFromRAM(self, i):
@@ -169,7 +171,8 @@ class VideoMotion:
         success, frame = self.video_capture.read()
 
         if not success or frame is None:
-            print(f"Failed to read frame {i}")
+            logging.critical(f"Failed to read frame {i}")
+            raise IOError(f"Failed to read frame {i}")
 
         return cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
@@ -195,9 +198,9 @@ class VideoMotion:
             getFrame = self.getFrameFromVidCap
             total_frames = int(self.video_capture.get(cv2.CAP_PROP_FRAME_COUNT))
 
-
         prev_frame = getFrame(0)
-        prev_frame = cv2.resize(prev_frame, (prev_frame.shape[1] // MOTION_DOWNSCALE, prev_frame.shape[0] // MOTION_DOWNSCALE))
+        prev_frame = cv2.resize(prev_frame,
+                                (prev_frame.shape[1] // MOTION_DOWNSCALE, prev_frame.shape[0] // MOTION_DOWNSCALE))
         self.motion_positions.append((0, 0.0, 0.0))
 
         for i in tqdm(range(MOTION_SAMPLING, total_frames, MOTION_SAMPLING), desc=f"Processing motion from frames"):
@@ -256,7 +259,7 @@ class VideoMotion:
         and saves the result to the specified path.
         """
         if not hasattr(self, "motion_positions") or len(self.motion_positions) == 0:
-            print("No motion data found. Run compute_motion() first.")
+            logging.warning("No motion data found. Run compute_motion() first.")
             return
 
         # Extract frame indices and displacements
@@ -316,7 +319,7 @@ class VideoMotion:
         self.speeds["vertical_shift"] = np.mean(vertical_shifts) * MOTION_DOWNSCALE
         self.stats["vertical_shift_std"] = np.std(vertical_shifts) * MOTION_DOWNSCALE
 
-        print(
+        logging.debug(
             f"Horizontal speed: {self.speeds['horizontal']}±{self.stats['horizontal_speed_std']}\n"
             f"Vertical shift: {self.speeds['vertical_shift']}±{self.stats['vertical_shift_std']}\n"
             f"Clockwise: {self.get_direction()}\n"
@@ -429,7 +432,9 @@ class VideoMotion:
         result = np.mean(results)
         self.frames_per_360 = np.ceil(frame_shift + result / abs(self.speeds['horizontal'])).astype(int)
         std_over_rows = np.std(results) / abs(self.speeds['horizontal'])
-        print(f"Frames per 360: {frame_shift + result / abs(self.speeds['horizontal'])}±{std_over_rows} calculated from frame_shift: {frame_shift}")
+        logging.debug(
+            f"Frames per 360: {frame_shift + result / abs(self.speeds['horizontal'])}±{std_over_rows} calculated from "
+            f"frame_shift: {frame_shift}")
 
     def get_frames_per360(self):
         """

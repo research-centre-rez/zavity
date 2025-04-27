@@ -1,3 +1,4 @@
+import logging
 import math
 import os
 from typing import LiteralString
@@ -208,9 +209,19 @@ class ImageRowStitcher:
         try:
             imgB_interpolated = interp((xg, yg))
         except Exception:
-            print(seed_position, shift, x.shape, y.shape, imgB.shape)
+            logging.critical(
+                f"Interpolation during score computing went wrong\n"
+                f"Seed position: {seed_position}\n"
+                f"Shift: {shift}\n"
+                f"ImgB shape: {imgB.shape}"
+            )
 
-            raise Exception
+            raise Exception(
+                f"Interpolation during score computing went wrong\n"
+                f"Seed position: {seed_position}\n"
+                f"Shift: {shift}\n"
+                f"ImgB shape: {imgB.shape}"
+            )
 
         return -ssim(
             imgA[
@@ -256,7 +267,7 @@ class ImageRowStitcher:
             self.physics["roll"] = int(np.round(self.motions.get_average_horizontal_shift() - self.imageRows[0].shape[1])) + 50
             self.physics["first_frame"] = (self.physics["shift"], self.physics["roll"])
 
-        print(f"Physics: {self.physics}\n")
+        logging.debug(f"Physics: {self.physics}\n")
 
         first_frame = self.physics["first_frame"]
         scan_shift = self.physics["shift"]
@@ -273,7 +284,7 @@ class ImageRowStitcher:
             self.seed_position = np.array([first_frame, [first_frame[0] - scan_shift, first_frame[1] - roll]]).astype(int)
             shift_seeds.append(self.seed_position)
             if np.any(np.isnan(self.imgA)) or np.any(np.isnan(self.imgB)):
-                print("One of the input images contains NaN values.")
+                logging.warning("One of the input images contains NaN values.")
             initial_score = -self.to_minimize((0, 0))
             result = minimize(self.to_minimize, x0=np.array([0, 0]), method='Powell',
                               bounds=[(-SEARCH_SPACE_SIZE[0], SEARCH_SPACE_SIZE[0]),
@@ -288,9 +299,9 @@ class ImageRowStitcher:
         self.per_row_shift = np.array([seed[0, :] - seed[1, :] - fix for seed, fix in zip(shift_seeds, shift_fixes)])
 
         if TESTING_MODE:
-            print(f"Score Gain mean: {np.mean(score_gains)}±{np.std(score_gains)}")
+            logging.debug(f"Score Gain mean: {np.mean(score_gains)}±{np.std(score_gains)}")
 
-        print(f"Calculated: per row shift\n"
+        logging.debug(f"Calculated: per row shift\n"
               f"{self.per_row_shift}")
 
     @staticmethod
@@ -385,7 +396,7 @@ class ImageRowStitcher:
                 lin_blend)
             blend_matrix[real_shift[en + 2]: to_grid[en + 1].shape[0] + real_shift[en + 1], :, en + 2] += lin_blend
 
-        print("Finishing up...")
+        logging.info("Finishing up...")
         blend_matrix[to_grid[en + 1].shape[0] + real_shift[en + 1]:, :, -1] += 1
 
         self.blended_full_image = np.sum(full_image * blend_matrix, axis=2) / np.sum(blend_matrix, axis=2)
