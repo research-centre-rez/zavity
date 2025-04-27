@@ -39,7 +39,7 @@ def configure_logging(filename):
     console_handler.setLevel(logging.INFO)
 
     # Configure root logger
-    logging.basicConfig(level=logging.INFO, handlers=[file_handler, console_handler])
+    logging.basicConfig(handlers=[file_handler, console_handler])
 
 
 def process_single_video(video_name, calc_rot_per_frame):
