@@ -1,0 +1,11 @@
+.git
+.venv
+__pycache__
+notebooks/.ipynb_checkpoints
+src/config/config.py
+*.pyc
+*.pyo
+*.pyd
+*.db
+*.egg-info
+*.egg
