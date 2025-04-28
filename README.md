@@ -25,7 +25,7 @@ Examples:
 docker run -v /path/to/input:/input -v /path/to/output:/output -v /path/to/config/config.py:/app/src/config/config.py oio-pipeline --mode multiple
 ```
 ```bash
-docker run -v /path/to/input:/input -v /path/to/output:/output -v /path/to/config/config.py:/app/src/config/config.py oio-pipeline --mode single --video_name "/video_name.mp4"
+docker run -v /path/to/input:/input -v /path/to/output:/output -v /path/to/config/config.py:/app/src/config/config.py oio-pipeline --mode single --video_name "video_name.mp4"
 ```
 
 ### Manual Usage
@@ -37,5 +37,5 @@ pip install -r requirements.txt
 ```
 3. Run the main script, for example:
 ```bash
-python src/scripts/main.py --mode single --video_name "/video_name.mp4"
+python src/scripts/main.py --mode single --video_name "video_name.mp4"
 ```
