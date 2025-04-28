@@ -12,7 +12,7 @@ Before running, navigate to configuration file located at `/src/config/config.py
 - `--mode {single,multiple}`: Specify the mode of operation (single video or multiple videos). If `single` you have to use argument `--video_name`. If `multiple` all files from `INPUT_FOLDER` (which is specified in configuration file `config.py`) are processed as videos.
 - `--video_name`: (Required if using `single` mode) Path to the video file.
 - `--calc_rot_per_frame`: (Default is False) Set to True to calculate its own rotation per frame, not using the precalculated one. Not recommended since it greatly increases computational time.
-- 
+
 ## Running
 ### Docker Usage
 To build the application image:
