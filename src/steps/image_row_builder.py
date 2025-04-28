@@ -11,8 +11,8 @@ from scipy.signal import find_peaks
 from sklearn.metrics import r2_score
 from tqdm.auto import tqdm
 
-from config.config import N_CPUS, TESTING_MODE, BLENDED_PIXELS_PER_FRAME, BLENDED_PIXELS_SHIFT, SINUSOID_SAMPLING, \
-    IMAGE_REPEATS, LOAD_VIDEO_TO_RAM, OUTPUT_FOLDER
+from config.config import (N_CPUS, VERBOSE, BLENDED_PIXELS_PER_FRAME, BLENDED_PIXELS_SHIFT, SINUSOID_SAMPLING,
+                           IMAGE_REPEATS, LOAD_VIDEO_TO_RAM, OUTPUT_FOLDER, TESTING_MODE, STRIPE_WIDTH)
 from steps.video_camera_motion import VideoMotion
 
 
@@ -87,20 +87,18 @@ class ImageRowBuilder:
             elif not moving_down and j == len(images) - 1:
                 image = image[:-(image.shape[0] // 4), :]
 
-            stripe_width = 100
-
-            if TESTING_MODE and j == 1:
+            if VERBOSE and j == 1:
                 image_crop = image[:, :image.shape[0]]
 
-                center_x = image.shape[0] // 2 - stripe_width // 2
+                center_x = image.shape[0] // 2 - STRIPE_WIDTH // 2
 
                 fig, ax = plt.subplots(figsize=(10, 8))
                 ax.imshow(image_crop, cmap="gray")
 
-                rect1 = patches.Rectangle((center_x-10, 0), stripe_width, image.shape[0], linestyle='--', alpha=0.7,
+                rect1 = patches.Rectangle((center_x-10, 0), STRIPE_WIDTH, image.shape[0], linestyle='--', alpha=0.7,
                                           edgecolor='red', facecolor='none', label='Left Stripe')
                 ax.add_patch(rect1)
-                rect2 = patches.Rectangle((center_x+10, 0), stripe_width, image.shape[0], linestyle='--', alpha=0.7,
+                rect2 = patches.Rectangle((center_x+10, 0), STRIPE_WIDTH, image.shape[0], linestyle='--', alpha=0.7,
                                           edgecolor='blue', facecolor='none', label='Right Stripe')
                 ax.add_patch(rect2)
                 ax.set_xlabel("X position")
@@ -113,10 +111,10 @@ class ImageRowBuilder:
 
             movements = []
 
-            for i in range(0, image.shape[1] - stripe_width - SINUSOID_SAMPLING, SINUSOID_SAMPLING):
+            for i in range(0, image.shape[1] - STRIPE_WIDTH - SINUSOID_SAMPLING, SINUSOID_SAMPLING):
                 # Extract vertical stripes
-                left_stripe = image[:, i:stripe_width + i]
-                right_stripe = image[:, i + SINUSOID_SAMPLING:stripe_width + i + SINUSOID_SAMPLING]
+                left_stripe = image[:, i:STRIPE_WIDTH + i]
+                right_stripe = image[:, i + SINUSOID_SAMPLING:STRIPE_WIDTH + i + SINUSOID_SAMPLING]
 
                 # Sum pixel intensities along the x-axis
                 left_profile = np.sum(left_stripe, axis=1)
@@ -130,7 +128,7 @@ class ImageRowBuilder:
                 peaks_left, _ = find_peaks(left_profile_smoothed, distance=distance)
                 peaks_right, _ = find_peaks(right_profile_smoothed, distance=distance)
 
-                if TESTING_MODE and j == 1 and i == center_x-10:
+                if VERBOSE and j == 1 and i == center_x-10:
                     plt.figure(figsize=(10, 5))
                     plt.plot(left_profile, label="Raw Profile of Left Stripe", color='red', alpha=0.7)
                     plt.plot(right_profile, label="Raw Profile of Right Stripe", color='blue', alpha=0.7)
@@ -172,7 +170,7 @@ class ImageRowBuilder:
 
             cumulative = np.cumsum(movements)
 
-            if TESTING_MODE and j == 1:
+            if VERBOSE and j == 1:
 
                 plt.figure(figsize=(10, 5))
                 plt.plot(cumulative)
@@ -203,7 +201,7 @@ class ImageRowBuilder:
             linear_trend = np.polyval(coefficients[-2:], x)
             detrended_movementses.append(movements - linear_trend)
 
-            if TESTING_MODE:
+            if VERBOSE:
                 # Plot to visualize detrending
                 plt.figure(figsize=(10, 5))
                 plt.plot(x, movements, label="Original Data")
@@ -292,7 +290,7 @@ class ImageRowBuilder:
                 logging.critical(f"Fit failed for index {i}: {e}")
                 continue  # or fill with default values if needed
 
-            if TESTING_MODE:
+            if VERBOSE:
                 y_fit = custom_rotated_sinusoid(x, *params)
                 r2 = r2_score(movements, y_fit)
                 logging.debug(f"R² score of fit: {r2:.4f}")

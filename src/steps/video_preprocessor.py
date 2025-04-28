@@ -11,9 +11,9 @@ from scipy.signal import savgol_filter, savgol_coeffs
 from tqdm.auto import tqdm
 
 from config.config import (N_CPUS, Y1, Y2, X1, X2, PREPROCESSOR_SAMPLING, ROT_PER_FRAME, PADDING, OUTPUT_FOLDER,
-                           CALIBRATION_CONFIG_FILE_PATH, RECTIFY, INTERVAL_FILTER_TH, PREPROCESSOR_DOWNSCALE,
-                           SEGMENT_TYPE_TH, REMOVE_ROTATION, VERBOSE, LOAD_VIDEO_TO_RAM, CODEC, EXT, PITCH_ANGLE,
-                           TESTING_MODE)
+                           RECTIFICATION_PARAMS_FOLDER, RECTIFY, INTERVAL_FILTER_TH, PREPROCESSOR_DOWNSCALE,
+                           SEGMENT_TYPE_TH, REMOVE_ROTATION, LOAD_VIDEO_TO_RAM, CODEC, EXT, PITCH_ANGLE,
+                           VERBOSE)
 from scripts.main import timing
 from steps.video_rectifier import _load_calibration_parameters
 
@@ -68,7 +68,7 @@ class VideoPreprocessor:
         self.video_height = int(self.video_capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
         self.frames = np.empty((self.num_frames, self.video_height, self.video_width), dtype=np.uint8)
         self.processed_frames = np.empty((self.num_frames, Y2 - Y1, X2 - X1), dtype=np.uint8)
-        _, mtx, newcameramtx, distortion, _, _ = _load_calibration_parameters(CALIBRATION_CONFIG_FILE_PATH)
+        _, mtx, newcameramtx, distortion, _, _ = _load_calibration_parameters(RECTIFICATION_PARAMS_FOLDER)
         self.mapx, self.mapy = cv2.initUndistortRectifyMap(mtx, distortion, None, newcameramtx,
                                                            (self.video_width, self.video_height), 5)
 
@@ -289,7 +289,7 @@ class VideoPreprocessor:
         if filter_length >= 2:
             angles_filtered = savgol_filter(angles, window_length=filter_length, polyorder=polyorder)
 
-            if TESTING_MODE:
+            if VERBOSE:
                 plt.figure(figsize=(10, 4))
                 plt.plot(angles, label="Original Angles", linestyle="--", alpha=0.7)
                 plt.plot(angles_filtered, label="Filtered Angles (Savitzky-Golay)", linestyle="--", alpha=0.7)

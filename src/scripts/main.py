@@ -92,7 +92,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Process single or multiple videos into one image overview.")
     parser.add_argument("--mode", type=str, choices=["single", "multiple"], required=True,
                         help="Mode of processing: 'single' for one video, 'multiple' for a folder of videos")
-    parser.add_argument("--video_name", type=str, help="Path to the single video file to process")
+    parser.add_argument("--video_name", type=str, help="Name of the video located in INPUT_FOLDER to process")
     parser.add_argument("--calc_rot_per_frame", type=bool, default=False,
                         help="Set to True to calculate its own rotation per frame, not using the precalculated one."
                              "It takes around 2 hours. Also it compares the precalculated one with calculated one.")
@@ -107,8 +107,4 @@ if __name__ == "__main__":
         process_single_video(args.video_name, args.calc_rot_per_frame)
 
     elif args.mode == "multiple":
-        # Check if path to folder is provided
-        folder_path = args.path_to_folder if args.path_to_folder else INPUT_FOLDER
-        if not folder_path:
-            raise ValueError("Please provide --path_to_folder for multiple videos processing mode.")
-        process_multiple_videos(folder_path, args.calc_rot_per_frame)
+        process_multiple_videos(INPUT_FOLDER, args.calc_rot_per_frame)

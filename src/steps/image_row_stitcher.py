@@ -11,7 +11,7 @@ from scipy.optimize import minimize
 from skimage.metrics import structural_similarity as ssim
 from tqdm.auto import tqdm
 
-from config.config import SEARCH_SPACE_SIZE, TESTING_MODE, ROW_ROTATION_OVERLAP_RATIO, XTOL, FTOL, OUTPUT_FOLDER, N_CPUS
+from config.config import SEARCH_SPACE_SIZE, TESTING_MODE, ROW_ROTATION_OVERLAP_RATIO, X_TOL, F_TOL, OUTPUT_FOLDER, N_CPUS
 from steps.video_camera_motion import VideoMotion
 
 
@@ -289,7 +289,7 @@ class ImageRowStitcher:
             result = minimize(self.to_minimize, x0=np.array([0, 0]), method='Powell',
                               bounds=[(-SEARCH_SPACE_SIZE[0], SEARCH_SPACE_SIZE[0]),
                                       (-SEARCH_SPACE_SIZE[1], SEARCH_SPACE_SIZE[1])],
-                              options={'xtol': XTOL, 'ftol': FTOL})
+                              options={'xtol': X_TOL, 'ftol': F_TOL})
             logging.debug("=" * 50)
             logging.debug(f"Result of position computing of row {i} and row {i+1}")
             if result.success:
@@ -309,9 +309,7 @@ class ImageRowStitcher:
 
         self.per_row_shift = np.array([seed[0, :] - seed[1, :] - fix for seed, fix in zip(shift_seeds, shift_fixes)])
 
-        if TESTING_MODE:
-            logging.debug(f"Score Gain mean: {np.mean(score_gains)}±{np.std(score_gains)}")
-
+        logging.debug(f"Score Gain mean: {np.mean(score_gains)}±{np.std(score_gains)}")
         logging.debug(f"Calculated: per row shift\n"
               f"{self.per_row_shift}")
 

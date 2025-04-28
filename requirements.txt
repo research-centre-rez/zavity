@@ -1,8 +1,9 @@
-imageio
-matplotlib
-numpy
-opencv_python
-pandas
-scikit_learn
-scipy
-tqdm
+imageio==2.37.0
+matplotlib==3.10.1
+numpy==2.2.5
+opencv-python==4.11.0.86
+pandas==2.2.3
+scikit-learn==1.6.1
+scipy==1.15.2
+scikit-image==0.25.2
+tqdm==4.67.1
