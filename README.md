@@ -1,7 +1,7 @@
 # OIO Pipeline
 
 ## Description
-Makes One Image Overview (OIO) from video scan of threaded insert.
+Makes One Image Overview (OIO) from video scan of threaded insert. The whole video scan has to include axial movement only in one direction.
 
 ## Configuration
 
