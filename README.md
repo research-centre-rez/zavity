@@ -29,7 +29,7 @@ docker run -v /path/to/input:/input -v /path/to/output:/output -v /path/to/confi
 ```
 
 ### Manual Usage
-1. Download and install FFmpeg
+1. [Download and install FFmpeg](https://ffmpeg.org/download.html)
 
 2. Install requirements, for example with pip:
 ```bash
