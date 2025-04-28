@@ -1,9 +1,20 @@
 # OIO Pipeline
 
 ## Description
-Makes overall image output from video scan.
+Makes One Image Overview (OIO) from video scan of threaded insert. The whole video scan has to include axial movement only in one direction.
 
-## Docker Usage
+## Configuration
+
+### Configuration file
+Before running, navigate to configuration file located at `/src/config/config.py`. Define paths to input and output folder and other configurable parameters, mostly to adapt it to your environment.
+
+### Main Method Arguments
+- `--mode {single,multiple}`: Specify the mode of operation (single video or multiple videos). If `single` you have to use argument `--video_name`. If `multiple` all files from `INPUT_FOLDER` (which is specified in configuration file `config.py`) are processed as videos.
+- `--video_name`: (Required if using `single` mode) Path to the video file.
+- `--calc_rot_per_frame`: (Default is False) Set to True to calculate its own rotation per frame, not using the precalculated one. Not recommended since it greatly increases computational time.
+
+## Running
+### Docker Usage
 To build the application image:
 ```bash
 docker build -t oio-pipeline .
@@ -14,12 +25,17 @@ Examples:
 docker run -v /path/to/input:/input -v /path/to/output:/output -v /path/to/config/config.py:/app/src/config/config.py oio-pipeline --mode multiple
 ```
 ```bash
-docker run -v /path/to/input:/input -v /path/to/output:/output -v /path/to/config/config.py:/app/src/config/config.py oio-pipeline --mode single --path_to_video '/input/GX010009_cely zavit clona nahoru.MP4'
+docker run -v /path/to/input:/input -v /path/to/output:/output -v /path/to/config/config.py:/app/src/config/config.py oio-pipeline --mode single --video_name "video_name.mp4"
 ```
 
-## Main Method Arguments
-- `--mode {single,multiple}`: Specify the mode of operation (single video or multiple videos).
-- `--path_to_video PATH_TO_VIDEO`: (Required if using `single` mode) Path to the video file.
-- `--path_to_folder PATH_TO_FOLDER`: (Required if using `multiple` mode) Path to the folder containing videos. Application then takes every file in the folder and run it as a video. So you need to have ONLY videos in that folder.
-- `--calc_rot_per_frame`: (Default is False) Set to True to calculate its own rotation per frame, not using the precalculated one. It takes around 2 hours. Also, it compares the precalculated one with calculated one.
+### Manual Usage
+1. [Download and install FFmpeg](https://ffmpeg.org/download.html)
 
+2. Install requirements, for example with pip:
+```bash
+pip install -r requirements.txt
+```
+3. Run the main script, for example:
+```bash
+python src/scripts/main.py --mode single --video_name "video_name.mp4"
+```
