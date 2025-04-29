@@ -20,7 +20,7 @@ from steps.video_rectifier import _load_calibration_parameters
 
 class VideoPreprocessor:
     """
-    A class for preprocessing videos by analysing frames, computing angles, and
+    A class for preprocessing videos by analysing frames, computing threads orientation per frame, and
     applying rotation corrections. Outputs a processed video and related computed data.
 
     Attributes:
@@ -33,6 +33,9 @@ class VideoPreprocessor:
         rotation_per_frame (float): Calculated rotation per frame.
         breakpoints (np.ndarray): Detected breakpoints in the video based on angles.
         segment_type (np.ndarray): Segment type array representing trends in angles.
+        frames (np.ndarray): List of frames captured from the video used when processing on RAM.
+        processed_frames (np.ndarray): List of processed frames to return from this class used when processing on RAM.
+        video_writer (cv2.VideoWriter): Video writer object for writing the processed video when RAM is not big enough.
     """
     video_name: str
     output_video_file_path: LiteralString | str | bytes
@@ -57,12 +60,12 @@ class VideoPreprocessor:
         """
         cv2.setNumThreads(N_CPUS)
         self.video_path = video_path
+        self.calc_rot_per_frame = calc_rot_per_frame
         self.video_capture = cv2.VideoCapture(self.video_path)
         self.video_name = os.path.basename(self.video_path)
         self.output_video_file_path = os.path.join(OUTPUT_FOLDER,
                                                    os.path.splitext(self.video_name)[0] + '_preprocessed' + EXT)
         self.borderBreakpoints = []
-        self.calc_rot_per_frame = calc_rot_per_frame
         self.num_frames = int(self.video_capture.get(cv2.CAP_PROP_FRAME_COUNT))
         self.video_width = int(self.video_capture.get(cv2.CAP_PROP_FRAME_WIDTH))
         self.video_height = int(self.video_capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -74,102 +77,29 @@ class VideoPreprocessor:
 
     def process(self):
         """
-        Processes the video, either loading precomputed data or performing computations
-        for angles, breakpoints, and rotation corrections.
+        Starts processing the video.
+        If video already exists, it loads computed data which are needed in next steps.
         """
         if REMOVE_ROTATION:
             if os.path.isfile(self.get_output_video_file_path()) and os.path.isfile(
                     self._dump_path("borderBreakpoints")):
                 self.borderBreakpoints = np.load(self._dump_path("borderBreakpoints"))
                 logging.debug(f"Loaded {self._dump_path('borderBreakpoints')}\n"
-                             f"{self.borderBreakpoints}\n")
+                              f"{self.borderBreakpoints}\n")
             else:
                 logging.info(f"Pre-processing video: {self.video_name}")
                 if LOAD_VIDEO_TO_RAM:
                     with timing("Load Frames"):
                         self.loadFrames()
                 self.load_or_compute()
+                self.preprocess_video()
         else:
             self.output_video_file_path = self.video_name
 
-    def _dump_path(self, object_name, extension='npy'):
-        """
-        Generates a path for saving or loading a specific object related to the video.
-
-        Args:
-            object_name (str): Name of the object to save/load.
-            extension (str): File extension for the object. Defaults to 'npy'.
-
-        Returns:
-            str: Path to the file.
-        """
-        return os.path.join(OUTPUT_FOLDER, os.path.splitext(self.video_name)[0] + f'-{object_name}.{extension}')
-
-    def dump(self, name: str, obj):
-        """
-        Saves an object to a file using numpy's save function.
-
-        Args:
-            name (str): Name of the object.
-            obj: The object to save.
-        """
-        np.save(self._dump_path(name), obj)
-
-    def load_or_compute(self):
-        """
-        Loads or computes angles, breakpoints, and rotation data for the video.
-        """
-        if self.calc_rot_per_frame:
-            if os.path.isfile(self._dump_path('full_angles')):
-                angles = np.load(self._dump_path('full_angles'))
-            else:
-                angles = self.compute_angles(step=1, angle_precision=1800, hough_treshold=200)
-                self.dump('full_angles', angles)
-            breakpoints = self.compute_breakpoints(angles, filter_length=8, step=1, merge_threshold=10)
-            border_breakpoints = self.compute_border_breakpoints(breakpoints, 1)
-            self.plot_angles(angles, breakpoints=breakpoints, border_breakpoints=border_breakpoints)
-            self.rotation_per_frame = self.compute_rotation_per_frame(angles, breakpoints, border_breakpoints)
-            logging.debug(f"Calculated rotation per frame\n"
-                         f"{self.rotation_per_frame}\n"
-                         f"Precalculated rotation per frame\n"
-                         f"{ROT_PER_FRAME}\n"
-                         f"Difference: {self.rotation_per_frame - ROT_PER_FRAME}\n")
-        else:
-            self.rotation_per_frame = ROT_PER_FRAME
-            logging.debug(f"Loaded precalculated rotation per frame\n"
-                         f"{self.rotation_per_frame}\n")
-
-        if os.path.isfile(self._dump_path("angles")):
-            self.angles = np.load(self._dump_path("angles"))
-            logging.debug(f"Loaded {self._dump_path('angles')}\n")
-        else:
-            with timing("Compute Angles"):
-                self.angles = self.compute_angles()
-            self.dump("angles", self.angles)
-
-        if os.path.isfile(self._dump_path("breakpoints")) and os.path.isfile(self._dump_path("borderBreakpoints")):
-            self.borderBreakpoints = np.load(self._dump_path("borderBreakpoints"))
-            logging.debug(f"Loaded {self._dump_path('borderBreakpoints')}\n"
-                         f"{self.borderBreakpoints}\n")
-            self.breakpoints = np.load(self._dump_path("breakpoints"))
-            logging.debug(f"Loaded {self._dump_path('breakpoints')}\n"
-                         f"{self.breakpoints}\n")
-        else:
-            with timing("Compute Breakpoints"):
-                self.breakpoints = self.compute_breakpoints(self.angles)
-            self.dump("breakpoints", self.breakpoints)
-            with timing("Compute Border Breakpoints"):
-                border_breakpoints = self.compute_border_breakpoints(self.breakpoints, PREPROCESSOR_SAMPLING)
-            with timing("Compute Border Breakpoints"):
-                self.borderBreakpoints = self.refine_border_breakpoints(border_breakpoints, step=PREPROCESSOR_SAMPLING)
-            self.dump("borderBreakpoints", self.borderBreakpoints)
-
-        if VERBOSE:
-            self.plot_angles(self.angles, border_breakpoints=self.borderBreakpoints, breakpoints=self.breakpoints,
-                             step=PREPROCESSOR_SAMPLING)
-        self.preprocess_video()
-
     def loadFrames(self):
+        """
+        Loads frames to memory for faster processing.
+        """
         w = self.video_width  # or X2 - X1 if cropping
         h = self.video_height  # or Y2 - Y1
         frame_size = w * h  # bytes per grayscale frame
@@ -178,7 +108,6 @@ class VideoPreprocessor:
             "-y",
             "-threads", f"{N_CPUS}",
             "-i", self.video_path,
-            # "-vf",f"crop={w}:{h}:{X1}:{Y1}",
             "-pix_fmt", "gray",
             "-f", "rawvideo",
             "pipe:1"
@@ -196,27 +125,67 @@ class VideoPreprocessor:
         pipe.wait()
         self.num_frames = len(self.frames)
 
-    def getFrameFromRAM(self, i):
-        return self.frames[i]
-
-    def getFrameFromVidCap(self, i):
-        self.video_capture.set(cv2.CAP_PROP_POS_FRAMES, i)
-        success, frame = self.video_capture.read()
-
-        if not success or frame is None:
-            logging.critical(f"Failed to read frame {i}")
-            raise IOError(f"Failed to read frame {i}")
-
-        return cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-
-    def compute_angles(self, start=0, end=None, step=PREPROCESSOR_SAMPLING, angle_precision=90, hough_treshold=80,
-                       apply_abs=True):
+    def load_or_compute(self):
         """
-        Computes angles for the video frames between start and end with a given step,
-        using OpenCV Canny + Hough transform instead of Devernay.
+        Loads or computes rotation per frames (if required), threads orientation, and breakpoints for the video.
+        """
+        if self.calc_rot_per_frame:
+            if os.path.isfile(self._dump_path('full_angles')):
+                angles = np.load(self._dump_path('full_angles'))
+            else:
+                angles = self.estimate_threads_orientation(step=1, angle_precision=1800, hough_treshold=200)
+                self.dump('full_angles', angles)
+            breakpoints = self.compute_breakpoint_candidates(angles, filter_length=8, step=1, merge_threshold=10)
+            border_breakpoints = self.filter_breakpoint_candidates(breakpoints, 1)
+            self.plot_angles(angles, breakpoint_candidates=breakpoints, breakpoints=border_breakpoints)
+            self.rotation_per_frame = self.compute_rotation_per_frame(angles, breakpoints, border_breakpoints)
+            logging.debug(f"Calculated rotation per frame\n"
+                          f"{self.rotation_per_frame}\n"
+                          f"Precalculated rotation per frame\n"
+                          f"{ROT_PER_FRAME}\n"
+                          f"Difference: {self.rotation_per_frame - ROT_PER_FRAME}\n")
+        else:
+            self.rotation_per_frame = ROT_PER_FRAME
+            logging.debug(f"Loaded precalculated rotation per frame\n"
+                          f"{self.rotation_per_frame}\n")
+
+        if os.path.isfile(self._dump_path("angles")):
+            self.angles = np.load(self._dump_path("angles"))
+            logging.debug(f"Loaded {self._dump_path('angles')}\n")
+        else:
+            with timing("Compute Angles"):
+                self.angles = self.estimate_threads_orientation()
+            self.dump("angles", self.angles)
+
+        if os.path.isfile(self._dump_path("breakpoints")) and os.path.isfile(self._dump_path("borderBreakpoints")):
+            self.borderBreakpoints = np.load(self._dump_path("borderBreakpoints"))
+            logging.debug(f"Loaded {self._dump_path('borderBreakpoints')}\n"
+                          f"{self.borderBreakpoints}\n")
+            self.breakpoints = np.load(self._dump_path("breakpoints"))
+            logging.debug(f"Loaded {self._dump_path('breakpoints')}\n"
+                          f"{self.breakpoints}\n")
+        else:
+            with timing("Compute Breakpoints"):
+                self.breakpoints = self.compute_breakpoint_candidates(self.angles)
+            self.dump("breakpoints", self.breakpoints)
+            with timing("Compute Border Breakpoints"):
+                border_breakpoints = self.filter_breakpoint_candidates(self.breakpoints, PREPROCESSOR_SAMPLING)
+            with timing("Compute Border Breakpoints"):
+                self.borderBreakpoints = self.refine_breakpoints(border_breakpoints, step=PREPROCESSOR_SAMPLING)
+            self.dump("borderBreakpoints", self.borderBreakpoints)
+
+        if VERBOSE:
+            self.plot_angles(self.angles, breakpoints=self.borderBreakpoints, breakpoint_candidates=self.breakpoints,
+                             step=PREPROCESSOR_SAMPLING)
+
+    def estimate_threads_orientation(self, start=0, end=None, step=PREPROCESSOR_SAMPLING, angle_precision=90, hough_treshold=80,
+                                     apply_abs=True):
+        """
+        Estimates thread's orientation for the video frames between start and end with a given step,
+        using OpenCV Canny + HoughLinesP.
 
         Returns:
-            np.ndarray: Computed angles for each frame.
+            np.ndarray: Estimated thread's orientation for each frame.
         """
         computed_angles = []
         if end is None:
@@ -264,13 +233,15 @@ class VideoPreprocessor:
         logging.debug(f"Angles calculated from {start} to {end} with step {step}\n")
         return np.array(computed_angles)
 
-    def compute_breakpoints(self, angles=None, filter_length=-1, step=PREPROCESSOR_SAMPLING, threshold=SEGMENT_TYPE_TH,
-                            merge_threshold=PREPROCESSOR_SAMPLING, secondary=True, segment_type_return=False):
+    def compute_breakpoint_candidates(
+            self, orientations=None, filter_length=-1, step=PREPROCESSOR_SAMPLING, threshold=SEGMENT_TYPE_TH,
+            merge_threshold=PREPROCESSOR_SAMPLING, secondary=True, segment_type_return=False
+    ):
         """
-        Computes breakpoints in the angle data.
+        Computes breakpoint candidates from the thread's orientations.
 
         Args:
-            angles (np.ndarray): List of angle values. Defaults to self.angles.
+            orientations (np.ndarray): List of angle values. Defaults to self.angles.
             filter_length (int): Filter size for smoothing the angles. Defaults to -1 (no filter).
             step (int): Step size for computation.
             threshold (float): Threshold for detecting changes in segments.
@@ -281,18 +252,18 @@ class VideoPreprocessor:
         Returns:
             np.ndarray: Array of breakpoints.
         """
-        if angles is None:
-            angles = self.angles
+        if orientations is None:
+            orientations = self.angles
 
         polyorder = 1
 
         # Apply filter if length is valid
         if filter_length >= 2:
-            angles_filtered = savgol_filter(angles, window_length=filter_length, polyorder=polyorder)
+            angles_filtered = savgol_filter(orientations, window_length=filter_length, polyorder=polyorder)
 
             if VERBOSE:
                 plt.figure(figsize=(10, 4))
-                plt.plot(angles, label="Original Angles", linestyle="--", alpha=0.7)
+                plt.plot(orientations, label="Original Angles", linestyle="--", alpha=0.7)
                 plt.plot(angles_filtered, label="Filtered Angles (Savitzky-Golay)", linestyle="--", alpha=0.7)
                 plt.xlabel("Frame Index")
                 plt.ylabel("Estimated Angle [°]")
@@ -312,65 +283,65 @@ class VideoPreprocessor:
                 plt.tight_layout()
                 plt.savefig(os.path.join(OUTPUT_FOLDER, "sg_filter.png"))
 
-            angles = angles_filtered
+            orientations = angles_filtered
 
-        derivative = np.diff(angles)
+        derivative = np.diff(orientations)
         threshold = threshold * step
 
         segment_type = np.zeros_like(derivative)
         segment_type[derivative > threshold] = 1  # Increasing
         segment_type[derivative < -threshold] = -1  # Decreasing
 
-        breakpoints = np.where(np.diff(segment_type) != 0)[0] + 1
+        breakpoint_candidates = np.where(np.diff(segment_type) != 0)[0] + 1
 
-        breakpoints = breakpoints * step
+        breakpoint_candidates = breakpoint_candidates * step
 
-        if len(breakpoints) > 1:
-            breakpoints = self.merge_breakpoints(breakpoints, step, threshold=merge_threshold, secondary=secondary,
-                                                 segment_type=segment_type)
+        if len(breakpoint_candidates) > 1:
+            breakpoint_candidates = self.merge_breakpoint_candidates(breakpoint_candidates, step, threshold=merge_threshold, secondary=secondary,
+                                                                     segment_type=segment_type)
 
-        breakpoints = np.concatenate([[0], breakpoints, [(len(angles) - 1) * step]])
+        breakpoint_candidates = np.concatenate([[0], breakpoint_candidates, [(len(orientations) - 1) * step]])
 
         logging.debug(f"Calculated: Breakpoint Candidates\n"
-                     f"{breakpoints}\n")
+                      f"{breakpoint_candidates}\n")
 
         if segment_type_return:
-            return breakpoints, segment_type
+            return breakpoint_candidates, segment_type
         else:
             self.segment_type = segment_type
-            return breakpoints
+            return breakpoint_candidates
 
     @staticmethod
-    def merge_breakpoints(breakpoints, step, threshold, segment_type, secondary=True):
+    def merge_breakpoint_candidates(breakpoint_candidates, step, threshold, segment_type, secondary=True):
         """
-        Merges close breakpoints based on a threshold.
+        Merges close breakpoint candidates based on a threshold.
 
         Args:
-            breakpoints (np.ndarray): List of breakpoints.
+            breakpoint_candidates (np.ndarray): List of breakpoint candidates.
             step (int): Step size for computation.
             threshold (int): Threshold for merging close breakpoints.
             segment_type (np.ndarray): Segment type of the angles.
             secondary (bool): Whether to apply secondary refinement.
 
         Returns:
-            np.ndarray: Array of merged breakpoints.
+            np.ndarray: Array of merged breakpoint candidates.
         """
         merged_breakpoints = []
 
         # Temporary group for close breakpoints
-        current_group = [breakpoints[0]]
+        current_group = [breakpoint_candidates[0]]
 
         # Iterate over the breakpoints
-        for i in range(1, len(breakpoints)):
+        for i in range(1, len(breakpoint_candidates)):
             # If the difference between consecutive breakpoints is below the threshold, group them
-            if breakpoints[i] - breakpoints[i - 1] <= threshold:
-                current_group.append(breakpoints[i])
+            if breakpoint_candidates[i] - breakpoint_candidates[i - 1] <= threshold:
+                current_group.append(breakpoint_candidates[i])
             else:
                 # If a current group is finished, calculate the rounded average and store it
                 avg_breakpoint = int(round(np.mean(current_group)))
                 merged_breakpoints.append(avg_breakpoint)
                 # Start a new group
-                current_group = [breakpoints[i]]
+                current_group = [breakpoint_candidates[i]]
 
         # Handle the last group
         if current_group:
@@ -399,41 +370,41 @@ class VideoPreprocessor:
         else:
             return np.asarray(merged_breakpoints)
 
-    def compute_border_breakpoints(self, breakpoints, step):
+    def filter_breakpoint_candidates(self, breakpoint_candidates, step):
         """
-        Computes border breakpoints between segments with different trends.
+        Filter breakpoints from breakpoint candidates based on segments with different trends.
 
         Args:
-            breakpoints (ndarray): List of breakpoints.
+            breakpoint_candidates (ndarray): List of breakpoint candidates.
             step (int): Step size for computation.
 
         Returns:
-            np.ndarray: Array of border breakpoints.
+            np.ndarray: Array of breakpoints.
         """
-        border_breakpoints = []
-        for i in range(0, len(breakpoints) - 1):
-            if stats.mode(self.segment_type[breakpoints[i] // step:breakpoints[i + 1] // step])[0] == 0:
-                border_breakpoints.append([breakpoints[i], breakpoints[i + 1]])
+        breakpoints = []
+        for i in range(0, len(breakpoint_candidates) - 1):
+            if stats.mode(self.segment_type[breakpoint_candidates[i] // step:breakpoint_candidates[i + 1] // step])[0] == 0:
+                breakpoints.append([breakpoint_candidates[i], breakpoint_candidates[i + 1]])
 
         logging.info(f"Calculated: Breakpoints\n"
-                     f"{np.asarray(border_breakpoints)}\n")
+                     f"{np.asarray(breakpoints)}\n")
 
-        return np.asarray(border_breakpoints)
+        return np.asarray(breakpoints)
 
-    def refine_border_breakpoints(self, border_breakpoints, step):
+    def refine_breakpoints(self, breakpoints, step):
         """
-        Refines the detected border breakpoints for greater accuracy.
+        Refines the roughly detected breakpoints for greater accuracy.
 
         Args:
-            border_breakpoints (ndarray): List of border breakpoints.
+            breakpoints (ndarray): List of rough breakpoints.
             step (int): Step size for computation.
 
         Returns:
-            list: Refined list of border breakpoints.
+            list: Refined list of breakpoints.
         """
         refined = []
 
-        for start, end in border_breakpoints:
+        for start, end in breakpoints:
             if start != 0:
                 start_breakpoint = self.refine_breakpoint(start)
             else:
@@ -461,9 +432,9 @@ class VideoPreprocessor:
         Returns:
            int: Refined breakpoint index.
         """
-        angles = self.compute_angles(bp - PREPROCESSOR_SAMPLING, bp + PREPROCESSOR_SAMPLING, 1, 1800, 200)
-        breakpoints, segment_type = self.compute_breakpoints(angles, step=1, merge_threshold=1,
-                                                             segment_type_return=True, filter_length=5)
+        angles = self.estimate_threads_orientation(bp - PREPROCESSOR_SAMPLING, bp + PREPROCESSOR_SAMPLING, 1, 1800, 200)
+        breakpoints, segment_type = self.compute_breakpoint_candidates(angles, step=1, merge_threshold=1,
+                                                                       segment_type_return=True, filter_length=5)
         if len(breakpoints) == 3:
             refined_bp = breakpoints[1]
         elif len(breakpoints) > 3:
@@ -504,63 +475,9 @@ class VideoPreprocessor:
         else:
             raise Exception("Too many border breakpoints calculated in refinement")
 
-    def compute_rotation_per_frame(self, angles, breakpoints, border_breakpoints):
-        """
-        Computes the rotation per frame based on angles, breakpoints, and border breakpoints.
-
-        Args:
-            angles (list): List of angle values.
-            breakpoints (np.ndarray): Detected breakpoints.
-            border_breakpoints (np.ndarray): Border breakpoints.
-
-        Returns:
-            float: Rotation per frame.
-        """
-        fa = []
-        j = 0
-        k = 0
-        start, end = border_breakpoints[j]
-        for i in range(0, len(breakpoints) - 1):
-            if not start == breakpoints[i]:
-                segment = stats.mode(self.segment_type[breakpoints[i]:breakpoints[i + 1]])[0]
-                offset = -(k * 180)
-                if segment == 1 and not start == breakpoints[i + 1]:
-                    k += 1
-                f = angles[breakpoints[i]:breakpoints[i + 1]] * -segment + offset
-                fa = np.concatenate([fa, f])
-            else:
-                j += 1
-                if j < len(border_breakpoints):
-                    start, end = border_breakpoints[j]
-
-        a, b = np.polyfit(np.arange(len(fa)), fa, 1)
-
-        plt.figure(figsize=(10, 4))
-        plt.plot(fa, label="Cumulative Rotation Angles", color="blue")
-        plt.plot([(a * x + b) for x in np.arange(len(fa))], label="Linear Fit (Polyfit)", color="red", linestyle="--")
-        plt.xlabel("Frame Index")
-        plt.ylabel("Rotation Angle (degrees)")
-        plt.legend()
-        plt.tight_layout()
-        plt.show()
-        plt.savefig(self._dump_path("RPF_function", "png"))
-        plt.close()
-
-        logging.info(f"Calculated : Angular Rotation Per Frame\n"
-                     f"{-a}")
-
-        return -a
-
-    def setFrameToRAM(self, frame, i):
-        self.processed_frames[i] = frame.astype(np.uint8)
-
-    def setFrameToVidCap(self, frame, i):
-        self.video_writer.write(frame.astype(np.uint8))
-
     def preprocess_video(self):
         """
-        Applies preprocessing to the video, including cropping, rotating frames,
-        and saving the processed output.
+        Applies preprocessing to the video, including cropping, rotating frames and saving the processed output.
         """
 
         i_row = 0
@@ -569,7 +486,7 @@ class VideoPreprocessor:
         else:
             start, end = 0, 999999
 
-        angle = float(self.compute_angles(start, start + 1, 1, 1800, 200, False)[0]) + PITCH_ANGLE
+        angle = float(self.estimate_threads_orientation(start, start + 1, 1, 1800, 200, False)[0]) + PITCH_ANGLE
 
         if LOAD_VIDEO_TO_RAM:
             getFrame = self.getFrameFromRAM
@@ -637,46 +554,56 @@ class VideoPreprocessor:
         logging.debug(f"warpAffine() {time_rotation}\n")
         logging.debug(f"write() {time_write}\n")
 
-    def getProcessedFrames(self):
-        return self.processed_frames
-
-    def plot_angles(self, angles, breakpoints=None, border_breakpoints=None, step=1):
+    def compute_rotation_per_frame(self, orientations, breakpoint_candidates, breakpoints):
         """
-        Plots angles and optionally marks breakpoints and border breakpoints.
+        Computes the rotation per frame based on thread's orientations, breakpoint candidates, and breakpoints.
 
         Args:
-            angles (np.ndarray): List of angles to plot.
-            breakpoints (np.ndarray, optional): List of breakpoints to mark on the plot.
-            border_breakpoints (list, optional): List of border breakpoints to mark.
-            step (int, optional): Step size for angle computation. Defaults to 1.
-        """
-        plt.figure(figsize=(15, 3))
-        x = range(len(angles))
-        x = [i * step for i in x]
-        plt.plot(x, angles)
-        if breakpoints is not None:
-            for bp in breakpoints:
-                plt.axvline(bp, color="blue")
-        if border_breakpoints is not None:
-            for start, end in self.borderBreakpoints:
-                plt.axvline(start, color="green")
-                plt.axvline(end, color="red")
-        plt.show()
-        plt.savefig(self._dump_path("angles", "png"))
-        plt.close()
-
-    def get_output_video_file_path(self):
-        """
-        Retrieves the path for the output processed video file.
+            orientations (list): List of estimated thread's orientations.
+            breakpoint_candidates (np.ndarray): Detected breakpoint candidates.
+            breakpoints (np.ndarray): Detected breakpoints.
 
         Returns:
-            str: Path to the output video file.
+            float: Rotation per frame.
         """
-        return self.output_video_file_path
+        fa = []
+        j = 0
+        k = 0
+        start, end = breakpoints[j]
+        for i in range(0, len(breakpoint_candidates) - 1):
+            if not start == breakpoint_candidates[i]:
+                segment = stats.mode(self.segment_type[breakpoint_candidates[i]:breakpoint_candidates[i + 1]])[0]
+                offset = -(k * 180)
+                if segment == 1 and not start == breakpoint_candidates[i + 1]:
+                    k += 1
+                f = orientations[breakpoint_candidates[i]:breakpoint_candidates[i + 1]] * -segment + offset
+                fa = np.concatenate([fa, f])
+            else:
+                j += 1
+                if j < len(breakpoints):
+                    start, end = breakpoints[j]
+
+        a, b = np.polyfit(np.arange(len(fa)), fa, 1)
+
+        plt.figure(figsize=(10, 4))
+        plt.plot(fa, label="Cumulative Rotation Angles", color="blue")
+        plt.plot([(a * x + b) for x in np.arange(len(fa))], label="Linear Fit (Polyfit)", color="red", linestyle="--")
+        plt.xlabel("Frame Index")
+        plt.ylabel("Rotation Angle (degrees)")
+        plt.legend()
+        plt.tight_layout()
+        plt.show()
+        plt.savefig(self._dump_path("RPF_function", "png"))
+        plt.close()
+
+        logging.info(f"Calculated : Angular Rotation Per Frame\n"
+                     f"{-a}")
+
+        return -a
 
     def get_intervals(self):
         """
-        Computes intervals between border breakpoints, filtering out small intervals.
+        Calculates intervals between breakpoints of segments with horizontal movement.
 
         Returns:
             list: List of filtered intervals.
@@ -709,3 +636,82 @@ class VideoPreprocessor:
             inverted.pop(-1)
 
         return inverted
+
+    def plot_angles(self, orientations, breakpoint_candidates=None, breakpoints=None, step=1):
+        """
+        Plots thread's orientations and optionally marks breakpoints and breakpoint candidates.
+
+        Args:
+            orientations (np.ndarray): List of thread's orientations to plot.
+            breakpoint_candidates (np.ndarray, optional): List of breakpoint candidates to mark on the plot.
+            breakpoints (list, optional): List of breakpoints to mark on the plot.
+            step (int, optional): Step size of thread's orientation estimation.
+        """
+        plt.figure(figsize=(15, 3))
+        x = range(len(orientations))
+        x = [i * step for i in x]
+        plt.plot(x, orientations)
+        if breakpoint_candidates is not None:
+            for bp in breakpoint_candidates:
+                plt.axvline(bp, color="blue")
+        if breakpoints is not None:
+            for start, end in self.borderBreakpoints:
+                plt.axvline(start, color="green")
+                plt.axvline(end, color="red")
+        plt.show()
+        plt.savefig(self._dump_path("angles", "png"))
+        plt.close()
+
+    def setFrameToRAM(self, frame, i):
+        self.processed_frames[i] = frame.astype(np.uint8)
+
+    def setFrameToVidCap(self, frame, i):
+        self.video_writer.write(frame.astype(np.uint8))
+
+    def getProcessedFrames(self):
+        return self.processed_frames
+
+    def get_output_video_file_path(self):
+        """
+        Retrieves the path for the output processed video file.
+
+        Returns:
+            str: Path to the output video file.
+        """
+        return self.output_video_file_path
+
+    def getFrameFromRAM(self, i):
+        return self.frames[i]
+
+    def getFrameFromVidCap(self, i):
+        self.video_capture.set(cv2.CAP_PROP_POS_FRAMES, i)
+        success, frame = self.video_capture.read()
+
+        if not success or frame is None:
+            logging.critical(f"Failed to read frame {i}")
+            raise IOError(f"Failed to read frame {i}")
+
+        return cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+    def _dump_path(self, object_name, extension='npy'):
+        """
+        Generates a path for saving or loading a specific object related to the video.
+
+        Args:
+            object_name (str): Name of the object to save/load.
+            extension (str): File extension for the object. Defaults to 'npy'.
+
+        Returns:
+            str: Path to the file.
+        """
+        return os.path.join(OUTPUT_FOLDER, os.path.splitext(self.video_name)[0] + f'-{object_name}.{extension}')
+
+    def dump(self, name: str, obj):
+        """
+        Saves an object to a file using numpy save function.
+
+        Args:
+            name (str): Name of the object.
+            obj: The object to save.
+        """
+        np.save(self._dump_path(name), obj)

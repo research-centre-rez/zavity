@@ -36,9 +36,6 @@ class ImageRowBuilder:
     def construct_rows(self):
         """
         Constructs image rows by processing video frames.
-
-        Returns:
-            None
         """
         logging.info(f"Processing RowBuilder for: {self.video_file_path}\n")
         rows = []
@@ -65,6 +62,107 @@ class ImageRowBuilder:
                 file_path = os.path.join(OUTPUT_FOLDER,
                                          os.path.splitext(os.path.basename(self.video_file_path))[0] + f"-oio-{i}.png")
                 iio.imwrite(file_path, row.astype(np.uint8))
+
+        return rows
+
+    def construct_row(self,
+                      start: int,
+                      end: int,
+                      i: int,
+                      blended_pixels_per_frame=BLENDED_PIXELS_PER_FRAME,
+                      blended_pixels_shift=BLENDED_PIXELS_SHIFT):
+        """
+        Constructs a single row image from video frames.
+
+        Args:
+            start (int): Starting frame index.
+            end (int): Ending frame index.
+            blended_pixels_per_frame (int): Pixels blended per frame.
+            blended_pixels_shift (int): Shift for blending.
+
+        Returns:
+            np.ndarray: Constructed row image.
+        """
+        if end - start <= 0:
+            raise IOError("Unsupported input data.")
+
+        frame_size = (self.width, self.height)
+
+        shift_per_frame = self.motions.get_horizontal_speed()
+        frames_per_360_deg = self.motions.get_frames_per360()
+        direction = self.motions.get_direction()
+
+
+        image_part = self.height
+
+        if LOAD_VIDEO_TO_RAM:
+            getFrame = self.getFrameFromRAM
+        else:
+            getFrame = self.getFrameFromVidCap
+
+        offset = max(0, math.ceil(start - (blended_pixels_per_frame // 2) / shift_per_frame))
+        n_frames = math.ceil(frames_per_360_deg + (blended_pixels_per_frame - 1) / shift_per_frame)
+
+        frame_shift_to_pixels_total = math.ceil(n_frames * shift_per_frame) + (blended_pixels_per_frame - 1) * 2
+        row_image = np.zeros(
+            (frame_size[0],
+             frame_shift_to_pixels_total))
+
+        weight_matrix = np.zeros(row_image.shape)
+
+        for frameNo in tqdm(range(0, n_frames), desc="Building row image"):
+            image = getFrame(offset + frameNo)  # shape (h, w), grayscale
+
+            shift = (row_image.shape[1] - shift_per_frame * frameNo - blended_pixels_per_frame) if direction == "CCW" else (
+                    shift_per_frame * frameNo)
+            shift_partial = shift % 1
+            shift_matrix = np.float32([
+                [1, 0, shift_partial],
+                [0, 1, 0]
+            ])
+
+            aligned_image = cv2.warpAffine(image, shift_matrix, (frame_size[1] + 1, frame_size[0]))
+
+            crop_x_start = math.floor(shift)
+            crop_x_end = max(0, crop_x_start + blended_pixels_per_frame)
+
+            # Add the cropped aligned image slice to row_image and weight matrix
+            try:
+                row_image[:, crop_x_start:crop_x_end] += aligned_image[:, (image_part // 2 - blended_pixels_per_frame // 2) + blended_pixels_shift:
+                                                            (image_part // 2 + 1 + blended_pixels_per_frame // 2) + blended_pixels_shift]
+            except:
+                raise Exception(f"Row builder failed on adding slice to row_image.\n"
+                                f"Row image shape{row_image.shape}\n"
+                                f"Crop from {crop_x_start} to {crop_x_end}\n"
+                                f"Adding image of shape {aligned_image.shape}\n"
+                                f"Offset {offset}\n"
+                                f"Frame {frameNo}")
+            weight_matrix[:, crop_x_start:crop_x_end] += 1
+
+        # Normalize and crop borders
+        row_size = math.floor(frames_per_360_deg * shift_per_frame)
+        start_col = (row_image.shape[1] - row_size) // 2
+        end_col = start_col + row_size
+        row_image = (row_image / weight_matrix)[:, start_col:end_col]
+
+        return np.copy(row_image)
+
+    def remove_sin_transform(self, rows):
+        """
+        Wrapper function to remove sinusoidal distortions.
+
+        Args:
+            rows (list[np.ndarray]): List of image rows.
+
+        Returns:
+            list[np.ndarray]: Corrected image rows.
+        """
+        if rows:
+            movementses = self.calculate_movements(rows)
+            movementses = self.detrend_movements(movementses)
+            params = self.fitSin(movementses)
+            logging.debug(f"\nParameters for sinusoidal transformation:\n{params}\n")
+            rows = self.remove_sinusoidal_transformation(rows, params)
 
         return rows
 
@@ -217,41 +315,6 @@ class ImageRowBuilder:
 
         return detrended_movementses
 
-    @staticmethod
-    def sinusoid(x, A, B, C, D):
-        """
-        Defines a sinusoidal function.
-
-        Args:
-            x (np.ndarray | float): Input values.
-            A (float): Amplitude.
-            B (float): Frequency.
-            C (float): Phase shift.
-            D (float): Vertical shift.
-
-        Returns:
-            np.ndarray | float: Sinusoidal output.
-        """
-        return A * np.sin(B * x + C) + D
-
-    @staticmethod
-    def rotated_sinusoid(x, A, B, C, D, theta):
-        """
-        Rotates a sinusoidal function by a given angle.
-
-        Args:
-            x (np.ndarray | float): Input values.
-            A, B, C, D (float): Sinusoidal parameters.
-            theta (float): Rotation angle.
-
-        Returns:
-            np.ndarray | float: Rotated sinusoidal output.
-        """
-        y = A * np.sin(B * x + C) + D
-        x_rot = x * np.cos(theta) - y * np.sin(theta)
-        y_rot = x * np.sin(theta) + y * np.cos(theta)
-        return y_rot
-
     def fitSin(self, movementses):
         """
         Fits a rotated sinusoidal model to cumulative movements.
@@ -362,24 +425,40 @@ class ImageRowBuilder:
 
         return rows
 
-    def remove_sin_transform(self, rows):
+    @staticmethod
+    def sinusoid(x, A, B, C, D):
         """
-        Wrapper function to remove sinusoidal distortions.
+        Defines a sinusoidal function.
 
         Args:
-            rows (list[np.ndarray]): List of image rows.
+            x (np.ndarray | float): Input values.
+            A (float): Amplitude.
+            B (float): Frequency.
+            C (float): Phase shift.
+            D (float): Vertical shift.
 
         Returns:
-            list[np.ndarray]: Corrected image rows.
+            np.ndarray | float: Sinusoidal output.
         """
-        if rows:
-            movementses = self.calculate_movements(rows)
-            movementses = self.detrend_movements(movementses)
-            params = self.fitSin(movementses)
-            logging.debug(f"\nParameters for sinusoidal transformation:\n{params}\n")
-            rows = self.remove_sinusoidal_transformation(rows, params)
+        return A * np.sin(B * x + C) + D
 
-        return rows
+    @staticmethod
+    def rotated_sinusoid(x, A, B, C, D, theta):
+        """
+        Rotates a sinusoidal function by a given angle.
+
+        Args:
+            x (np.ndarray | float): Input values.
+            A, B, C, D (float): Sinusoidal parameters.
+            theta (float): Rotation angle.
+
+        Returns:
+            np.ndarray | float: Rotated sinusoidal output.
+        """
+        y = A * np.sin(B * x + C) + D
+        x_rot = x * np.cos(theta) - y * np.sin(theta)
+        y_rot = x * np.sin(theta) + y * np.cos(theta)
+        return y_rot
 
     def getFrameFromRAM(self, i):
         return self.frames[i]
@@ -393,85 +472,3 @@ class ImageRowBuilder:
             raise IOError(f"Failed to read frame {i}")
 
         return cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-
-    def construct_row(self,
-                      start: int,
-                      end: int,
-                      i: int,
-                      blended_pixels_per_frame=BLENDED_PIXELS_PER_FRAME,
-                      blended_pixels_shift=BLENDED_PIXELS_SHIFT):
-        """
-        Constructs a single row image from video frames.
-
-        Args:
-            start (int): Starting frame index.
-            end (int): Ending frame index.
-            blended_pixels_per_frame (int): Pixels blended per frame.
-            blended_pixels_shift (int): Shift for blending.
-
-        Returns:
-            np.ndarray: Constructed row image.
-        """
-        if end - start <= 0:
-            raise IOError("Unsupported input data.")
-
-        frame_size = (self.width, self.height)
-
-        shift_per_frame = self.motions.get_horizontal_speed()
-        frames_per_360_deg = self.motions.get_frames_per360()
-        direction = self.motions.get_direction()
-
-
-        image_part = self.height
-
-        if LOAD_VIDEO_TO_RAM:
-            getFrame = self.getFrameFromRAM
-        else:
-            getFrame = self.getFrameFromVidCap
-
-        offset = max(0, math.ceil(start - (blended_pixels_per_frame // 2) / shift_per_frame))
-        n_frames = math.ceil(frames_per_360_deg + (blended_pixels_per_frame - 1) / shift_per_frame)
-
-        frame_shift_to_pixels_total = math.ceil(n_frames * shift_per_frame) + (blended_pixels_per_frame - 1) * 2
-        row_image = np.zeros(
-            (frame_size[0],
-             frame_shift_to_pixels_total))
-
-        weight_matrix = np.zeros(row_image.shape)
-
-        for frameNo in tqdm(range(0, n_frames), desc="Building row image"):
-            image = getFrame(offset + frameNo)  # shape (h, w), grayscale
-
-            shift = (row_image.shape[1] - shift_per_frame * frameNo - blended_pixels_per_frame) if direction == "CCW" else (
-                    shift_per_frame * frameNo)
-            shift_partial = shift % 1
-            shift_matrix = np.float32([
-                [1, 0, shift_partial],
-                [0, 1, 0]
-            ])
-
-            aligned_image = cv2.warpAffine(image, shift_matrix, (frame_size[1] + 1, frame_size[0]))
-
-            crop_x_start = math.floor(shift)
-            crop_x_end = max(0, crop_x_start + blended_pixels_per_frame)
-
-            # Add the cropped aligned image slice to row_image and weight matrix
-            try:
-                row_image[:, crop_x_start:crop_x_end] += aligned_image[:, (image_part // 2 - blended_pixels_per_frame // 2) + blended_pixels_shift:
-                                                            (image_part // 2 + 1 + blended_pixels_per_frame // 2) + blended_pixels_shift]
-            except:
-                raise Exception(f"Row builder failed on adding slice to row_image.\n"
-                                f"Row image shape{row_image.shape}\n"
-                                f"Crop from {crop_x_start} to {crop_x_end}\n"
-                                f"Adding image of shape {aligned_image.shape}\n"
-                                f"Offset {offset}\n"
-                                f"Frame {frameNo}")
-            weight_matrix[:, crop_x_start:crop_x_end] += 1
-
-        # Normalize and crop borders
-        row_size = math.floor(frames_per_360_deg * shift_per_frame)
-        start_col = (row_image.shape[1] - row_size) // 2
-        end_col = start_col + row_size
-        row_image = (row_image / weight_matrix)[:, start_col:end_col]
-
-        return np.copy(row_image)
