@@ -45,11 +45,17 @@ def configure_logging(filename):
     )
 
 
-def process_single_video(video_name, calc_rot_per_frame):
-    video_path = os.path.join(INPUT_FOLDER, video_name)
-    configure_logging(video_name)
-    logging.info(f"Processing single video: {video_path}. Output will be saved to {OUTPUT_FOLDER}.")
-    process_video(video_path, calc_rot_per_frame)
+def process_single_video(video_name, calc_rot_per_frame, dm_video_name):
+    if not dm_video_name:
+        video_path = os.path.join(INPUT_FOLDER, video_name)
+        configure_logging(video_name)
+        logging.info(f"Processing single video: {video_path}. Output will be saved to {OUTPUT_FOLDER}.")
+        process_video(video_path, calc_rot_per_frame)
+    else:
+        dm_video_path = os.path.join(INPUT_FOLDER, dm_video_name)
+        configure_logging(dm_video_name)
+        logging.info(f"Processing DM Overview for: {dm_video_path}. Output will be saved to {OUTPUT_FOLDER}.")
+        process_video(video_name, calc_rot_per_frame, dm_video_path)
 
 
 def process_multiple_videos(folder_path, calc_rot_per_frame):
@@ -62,12 +68,12 @@ def process_multiple_videos(folder_path, calc_rot_per_frame):
             process_video(video_path, calc_rot_per_frame)
 
 
-def process_video(video_path, calc_rot_per_frame):
+def process_video(video_path, calc_rot_per_frame, dm_video_path=None):
     with timing("Total OIO Pipeline"):
         # Pipeline stages
         with timing("Preprocessor"):
             from steps.video_preprocessor import VideoPreprocessor
-            preprocessor = VideoPreprocessor(video_path, calc_rot_per_frame)
+            preprocessor = VideoPreprocessor(video_path, calc_rot_per_frame, dm_video_path)
             preprocessor.process()
             video_file_path = preprocessor.get_output_video_file_path()
             frames = preprocessor.getProcessedFrames()
@@ -76,12 +82,18 @@ def process_video(video_path, calc_rot_per_frame):
             motions = VideoMotion(frames, video_file_path, preprocessor.get_intervals())
             motions.process()
 
+        constructor = ImageRowBuilder(
+            frames,
+            motions,
+            preprocessor.get_intervals(),
+            preprocessor.get_output_video_file_path(),
+            preprocessor.get_output_video_file_path(True)
+        )
         with timing("RowBuilder"):
-            constructor = ImageRowBuilder(frames, motions, preprocessor.get_intervals(), video_file_path)
             rows = constructor.construct_rows()
 
         with timing("RowStitcher"):
-            stitcher = ImageRowStitcher(rows, motions, video_path)
+            stitcher = ImageRowStitcher(rows, motions, video_path, dm_video_path)
             stitcher.process()
 
     logging.info("OIO done")
@@ -96,6 +108,9 @@ if __name__ == "__main__":
     parser.add_argument("--calc_rot_per_frame", type=bool, default=False,
                         help="Set to True to calculate its own rotation per frame, not using the precalculated one."
                              "It takes around 2 hours. Also it compares the precalculated one with calculated one.")
+    parser.add_argument("--dm_video_name", type=str, help="Name of the depth map video paired with the video "
+                                                          "specified with --video_name. Only availible in 'single' "
+                                                          "mode and without --calc_rot_per_frame set to False.")
 
     # Parse the arguments
     args = parser.parse_args()
@@ -104,7 +119,7 @@ if __name__ == "__main__":
     if args.mode == "single":
         if not args.video_name:
             raise ValueError("Please provide --path_to_video for single video processing mode.")
-        process_single_video(args.video_name, args.calc_rot_per_frame)
+        process_single_video(args.video_name, args.calc_rot_per_frame, args.dm_video_name)
 
     elif args.mode == "multiple":
         process_multiple_videos(INPUT_FOLDER, args.calc_rot_per_frame)

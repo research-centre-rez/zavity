@@ -45,7 +45,7 @@ class ImageRowStitcher:
     per_row_shift: np.ndarray
     blended_full_image: np.ndarray
 
-    def __init__(self, rows, motions, video_path):
+    def __init__(self, rows, motions, video_path, dm_video_path):
         """
         Initializes the ImageRowStitcher.
 
@@ -58,8 +58,12 @@ class ImageRowStitcher:
         self.imageRows = rows
         self.rolledImageRows = []
         self.video_name = os.path.basename(video_path)
-        self.output_oio_path = os.path.join(OUTPUT_FOLDER,
-                                            os.path.splitext(os.path.basename(video_path))[0] + '-oio.png')
+        if dm_video_path:
+            self.dm_video_name = os.path.basename(dm_video_path)
+            self.output_oio_path = os.path.join(OUTPUT_FOLDER,
+                                                os.path.splitext(os.path.basename(dm_video_path))[0] + '-oio.png')
+        else:
+            self.output_oio_path = os.path.join(OUTPUT_FOLDER, os.path.splitext(os.path.basename(video_path))[0] + '-oio.png')
         self.physics = {}
 
     def process(self):
@@ -119,7 +123,11 @@ class ImageRowStitcher:
         self.rollImageRows()
         if TESTING_MODE:
             for i, row in enumerate(self.rolledImageRows):
-                file_path = os.path.join(OUTPUT_FOLDER, os.path.splitext(self.video_name)[0] + f"-oio-{i}-rolled.png")
+                if hasattr(self, "dm_video_name"):
+                    file_path = os.path.join(OUTPUT_FOLDER,
+                                             os.path.splitext(self.dm_video_name)[0] + f"-oio-{i}-rolled.png")
+                else:
+                    file_path = os.path.join(OUTPUT_FOLDER, os.path.splitext(self.video_name)[0] + f"-oio-{i}-rolled.png")
                 iio.imwrite(file_path, row.astype(np.uint8))
         self.stitchImageRows()
         self.dumpOIO()
@@ -326,18 +334,46 @@ class ImageRowStitcher:
         Returns:
             np.ndarray: Rolled array.
         """
-        double_image = np.concatenate([array, array], axis=1)
-        interp = RegularGridInterpolator(
-            (np.arange(double_image.shape[0]), np.arange(double_image.shape[1])),
-            double_image
-        )
-        if shift > 0:
-            y = np.arange(array.shape[1] - shift, 2 * array.shape[1] - shift - 0.5)
+        if array.ndim == 2:
+            # Grayscale
+            double_image = np.concatenate([array, array], axis=1)
+            interp = RegularGridInterpolator(
+                (np.arange(double_image.shape[0]), np.arange(double_image.shape[1])),
+                double_image
+            )
+
+            if shift > 0:
+                y = np.arange(array.shape[1] - shift, 2 * array.shape[1] - shift - 0.5)
+            else:
+                y = np.arange(-shift, array.shape[1] - shift - 0.5)
+            x = np.arange(array.shape[0])
+            xg, yg = np.meshgrid(x, y)
+            return interp((xg, yg)).T
+
+        elif array.ndim == 3:
+            # Color image (process each channel separately)
+            rolled_channels = []
+            for ch in range(array.shape[2]):
+                double_image = np.concatenate([array[:, :, ch], array[:, :, ch]], axis=1)
+                interp = RegularGridInterpolator(
+                    (np.arange(double_image.shape[0]), np.arange(double_image.shape[1])),
+                    double_image
+                )
+
+                if shift > 0:
+                    y = np.arange(array.shape[1] - shift, 2 * array.shape[1] - shift - 0.5)
+                else:
+                    y = np.arange(-shift, array.shape[1] - shift - 0.5)
+                x = np.arange(array.shape[0])
+                xg, yg = np.meshgrid(x, y)
+
+                rolled_channel = interp((xg, yg)).T
+                rolled_channels.append(rolled_channel)
+
+            # Stack channels back
+            return np.stack(rolled_channels, axis=2)
         else:
-            y = np.arange(-shift, array.shape[1] - shift - 0.5)
-        x = np.arange(array.shape[0])
-        xg, yg = np.meshgrid(x, y)
-        return interp((xg, yg)).T
+            raise ValueError(f"Unsupported array shape {array.shape}. Must be 2D or 3D.")
 
     @staticmethod
     def signed_mod(val, mod_base):
@@ -356,56 +392,82 @@ class ImageRowStitcher:
     def stitchImageRows(self):
         """
         Stitches the rolled image rows into a single cohesive image.
+        Supports both grayscale and color images.
         """
+        is_color = self.rolledImageRows[0].ndim == 3  # Check if color image (H, W, 3)
+
         to_grid = [self.rolledImageRows[0]]
         real_shift = [0]
+
         for image, shift in tqdm(zip(self.rolledImageRows[1:], np.cumsum(self.per_row_shift[:, 0])),
                                  total=self.per_row_shift.shape[0], desc="Stitching image"):
-            if TESTING_MODE:
-                image[0, :] = 0
-                image[-1, :] = 0
-                image[:, 0] = 0
-                image[:, -1] = 0
 
-            interp = RegularGridInterpolator(
-                (np.arange(image.shape[0]), np.arange(image.shape[1])),
-                image
-            )
-            x = np.arange(image.shape[0] - 1)
-            y = np.arange(image.shape[1])
-            xg, yg = np.meshgrid(x, y)
-            to_grid.append(interp((xg, yg)).T)
+            if TESTING_MODE:
+                if is_color:
+                    image[0, :, :] = 0
+                    image[-1, :, :] = 0
+                    image[:, 0, :] = 0
+                    image[:, -1, :] = 0
+                else:
+                    image[0, :] = 0
+                    image[-1, :] = 0
+                    image[:, 0] = 0
+                    image[:, -1] = 0
+
+            # Interpolation
+            if is_color:
+                channels_interp = []
+                for c in range(image.shape[2]):  # For each channel
+                    interp = RegularGridInterpolator(
+                        (np.arange(image.shape[0]), np.arange(image.shape[1])),
+                        image[:, :, c]
+                    )
+                    x = np.arange(image.shape[0] - 1)
+                    y = np.arange(image.shape[1])
+                    xg, yg = np.meshgrid(x, y)
+                    interpolated_c = interp((xg, yg)).T
+                    channels_interp.append(interpolated_c)
+
+                aligned = np.stack(channels_interp, axis=2)
+                to_grid.append(aligned)
+            else:
+                interp = RegularGridInterpolator(
+                    (np.arange(image.shape[0]), np.arange(image.shape[1])),
+                    image
+                )
+                x = np.arange(image.shape[0] - 1)
+                y = np.arange(image.shape[1])
+                xg, yg = np.meshgrid(x, y)
+                aligned = interp((xg, yg)).T
+                to_grid.append(aligned)
+
             real_shift.append(int(shift // 1))
 
         out_height = self.rolledImageRows[0].shape[0] + np.max(real_shift)
-        if TESTING_MODE:
-            full_image = np.zeros((out_height, self.rolledImageRows[0].shape[1]))
-            for image, r_shift in zip(to_grid, real_shift):
-                full_image[r_shift: r_shift + image.shape[0], :] = image
-            self.blended_full_image = full_image
-            return
-        full_image = np.zeros((out_height, self.rolledImageRows[0].shape[1], len(self.rolledImageRows)))
-        for en, (image, r_shift) in enumerate(zip(to_grid, real_shift)):
-            full_image[r_shift: r_shift + image.shape[0], :, en] = image
+        out_width = self.rolledImageRows[0].shape[1]
 
-        blend_matrix = np.zeros((out_height, to_grid[0].shape[1], len(to_grid)))
+        # Create empty full_image
+        if is_color:
+            full_image = np.zeros((out_height, out_width, 3))
+        else:
+            full_image = np.zeros((out_height, out_width))
 
-        blend_matrix[:real_shift[1], :, 0] += 1
-        lin_blend = np.dot(np.linspace(0, 1, (to_grid[0].shape[0] - real_shift[1]), endpoint=False).reshape(-1, 1),
-                           np.ones((to_grid[0].shape[1], 1)).T)
-        blend_matrix[real_shift[1]: to_grid[0].shape[0], :, 0] += np.flipud(lin_blend)
-        blend_matrix[real_shift[1]: to_grid[0].shape[0], :, 1] += lin_blend
+        # Create blend matrix
+        blend_matrix = np.zeros(full_image.shape)
 
-        for en, (image, r_shift) in tqdm(enumerate(list(zip(to_grid, real_shift))[:-2]),
-                                         total=len(list(zip(to_grid, real_shift))[:-2]), desc="Blending image"):
-            blend_matrix[real_shift[en] + to_grid[en].shape[0]: real_shift[en + 2], :, en + 1] += 1
-            lin_blend = np.dot(np.linspace(0, 1, (to_grid[en + 1].shape[0] + real_shift[en + 1] - real_shift[en + 2]),
-                                           endpoint=False).reshape(-1, 1), np.ones((to_grid[en + 1].shape[1], 1)).T)
-            blend_matrix[real_shift[en + 2]: to_grid[en + 1].shape[0] + real_shift[en + 1], :, en + 1] += np.flipud(
-                lin_blend)
-            blend_matrix[real_shift[en + 2]: to_grid[en + 1].shape[0] + real_shift[en + 1], :, en + 2] += lin_blend
+        # Stitching and blending
+        logging.info("Starting stitching...")
 
-        logging.info("Finishing up...")
-        blend_matrix[to_grid[en + 1].shape[0] + real_shift[en + 1]:, :, -1] += 1
+        for idx, (image, r_shift) in enumerate(zip(to_grid, real_shift)):
+            if is_color:
+                full_image[r_shift: r_shift + image.shape[0], :, :] += image
+                blend_matrix[r_shift: r_shift + image.shape[0], :, :] += 1
+            else:
+                full_image[r_shift: r_shift + image.shape[0], :] += image
+                blend_matrix[r_shift: r_shift + image.shape[0], :] += 1
 
-        self.blended_full_image = np.sum(full_image * blend_matrix, axis=2) / np.sum(blend_matrix, axis=2)
+        # Avoid division by zero
+        blend_matrix[blend_matrix == 0] = 1
+        stitched_image = full_image / blend_matrix
+
+        self.blended_full_image = stitched_image

@@ -47,7 +47,7 @@ class VideoPreprocessor:
     processed_frames: np.ndarray
     video_writer: cv2.VideoWriter
 
-    def __init__(self, video_path, calc_rot_per_frame):
+    def __init__(self, video_path, calc_rot_per_frame, dm_video_path):
         """
         Initializes the VideoPreprocessor.
 
@@ -57,17 +57,29 @@ class VideoPreprocessor:
         """
         cv2.setNumThreads(N_CPUS)
         self.video_path = video_path
-        self.video_capture = cv2.VideoCapture(self.video_path)
-        self.video_name = os.path.basename(self.video_path)
-        self.output_video_file_path = os.path.join(OUTPUT_FOLDER,
-                                                   os.path.splitext(self.video_name)[0] + '_preprocessed' + EXT)
-        self.borderBreakpoints = []
         self.calc_rot_per_frame = calc_rot_per_frame
-        self.num_frames = int(self.video_capture.get(cv2.CAP_PROP_FRAME_COUNT))
-        self.video_width = int(self.video_capture.get(cv2.CAP_PROP_FRAME_WIDTH))
-        self.video_height = int(self.video_capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        self.frames = np.empty((self.num_frames, self.video_height, self.video_width), dtype=np.uint8)
-        self.processed_frames = np.empty((self.num_frames, Y2 - Y1, X2 - X1), dtype=np.uint8)
+        self.video_name = os.path.basename(self.video_path)
+        if dm_video_path:
+            self.dm = True
+            self.dm_video_path = dm_video_path
+            self.dm_video_name = os.path.basename(dm_video_path)
+            self.video_capture = cv2.VideoCapture(self.dm_video_path)
+            self.video_width = int(self.video_capture.get(cv2.CAP_PROP_FRAME_WIDTH))
+            self.video_height = int(self.video_capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            self.num_frames = int(self.video_capture.get(cv2.CAP_PROP_FRAME_COUNT))
+            self.dm_output_video_file_path = os.path.join(OUTPUT_FOLDER, os.path.splitext(self.dm_video_name)[0] + '_preprocessed' + EXT)
+            self.frames = np.empty((self.num_frames, self.video_height, self.video_width, 3), dtype=np.uint8)
+            self.processed_frames = np.empty((self.num_frames, Y2 - Y1, X2 - X1, 3), dtype=np.uint8)
+        else:
+            self.dm = False
+            self.video_capture = cv2.VideoCapture(self.video_path)
+            self.video_width = int(self.video_capture.get(cv2.CAP_PROP_FRAME_WIDTH))
+            self.video_height = int(self.video_capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            self.num_frames = int(self.video_capture.get(cv2.CAP_PROP_FRAME_COUNT))
+            self.frames = np.empty((self.num_frames, self.video_height, self.video_width), dtype=np.uint8)
+            self.processed_frames = np.empty((self.num_frames, Y2 - Y1, X2 - X1), dtype=np.uint8)
+        self.output_video_file_path = os.path.join(OUTPUT_FOLDER, os.path.splitext(self.video_name)[0] + '_preprocessed' + EXT)
+        self.borderBreakpoints = []
         _, mtx, newcameramtx, distortion, _, _ = _load_calibration_parameters(RECTIFICATION_PARAMS_FOLDER)
         self.mapx, self.mapy = cv2.initUndistortRectifyMap(mtx, distortion, None, newcameramtx,
                                                            (self.video_width, self.video_height), 5)
@@ -77,19 +89,34 @@ class VideoPreprocessor:
         Processes the video, either loading precomputed data or performing computations
         for angles, breakpoints, and rotation corrections.
         """
+
+        if os.path.isfile(self._dump_path("borderBreakpoints")):
+            self.borderBreakpoints = np.load(self._dump_path("borderBreakpoints"))
+            logging.debug(
+                f"Loaded {self._dump_path('borderBreakpoints')}\n"
+                f"{self.borderBreakpoints}\n"
+            )
         if REMOVE_ROTATION:
-            if os.path.isfile(self.get_output_video_file_path()) and os.path.isfile(
-                    self._dump_path("borderBreakpoints")):
-                self.borderBreakpoints = np.load(self._dump_path("borderBreakpoints"))
-                logging.debug(f"Loaded {self._dump_path('borderBreakpoints')}\n"
-                             f"{self.borderBreakpoints}\n")
+            if os.path.isfile(self.get_output_video_file_path(self.dm)):
+                pass
             else:
-                logging.info(f"Pre-processing video: {self.video_name}")
+                if LOAD_VIDEO_TO_RAM:
+                    with timing("Load Frames"):
+                        self.loadFrames()
+                if self.dm:
+                    logging.info(f"Pre-processing video: {self.dm_video_name}")
+                    self.rotation_per_frame = ROT_PER_FRAME
+                    logging.debug(f"Loaded precalculated rotation per frame\n"
+                                  f"{self.rotation_per_frame}\n")
+                    self.preprocess_video()
+                else:
+                    logging.info(f"Pre-processing video: {self.video_name}")
+                    self.load_or_compute()
+        else:
+            if LOAD_VIDEO_TO_RAM:
                 with timing("Load Frames"):
                     self.loadFrames()
-                self.load_or_compute()
-        else:
-            self.output_video_file_path = self.video_name
+            self.output_video_file_path = self.video_path
 
     def _dump_path(self, object_name, extension='npy'):
         """
@@ -169,16 +196,24 @@ class VideoPreprocessor:
         self.preprocess_video()
 
     def loadFrames(self):
-        w = self.video_width  # or X2 - X1 if cropping
-        h = self.video_height  # or Y2 - Y1
-        frame_size = w * h  # bytes per grayscale frame
+        if self.dm:
+            video_path = self.dm_video_path
+            pix_fmt = "bgr24"  # COLOR, 3 channels
+            channels = 3
+        else:
+            video_path = self.video_path
+            pix_fmt = "gray"  # GRAYSCALE, 1 channel
+            channels = 1
+
+        w = self.video_width
+        h = self.video_height
+        frame_size = w * h * channels
         command = [
             "ffmpeg",
             "-y",
             "-threads", f"{N_CPUS}",
-            "-i", self.video_path,
-            # "-vf",f"crop={w}:{h}:{X1}:{Y1}",
-            "-pix_fmt", "gray",
+            "-i", video_path,
+            "-pix_fmt", pix_fmt,
             "-f", "rawvideo",
             "pipe:1"
         ]
@@ -187,9 +222,14 @@ class VideoPreprocessor:
         for idx in range(self.num_frames):
             raw = pipe.stdout.read(frame_size)
             if not raw or len(raw) < frame_size:
-                self.frames = self.frames[:idx]  # trim the unused part
+                self.frames = self.frames[:idx]
                 break
-            self.frames[idx] = np.frombuffer(raw, dtype=np.uint8).reshape((h, w))
+            frame = np.frombuffer(raw, dtype=np.uint8)
+            if channels == 1:
+                frame = frame.reshape((h, w))
+            else:
+                frame = frame.reshape((h, w, 3))
+            self.frames[idx] = frame
 
         pipe.stdout.close()
         pipe.wait()
@@ -556,6 +596,14 @@ class VideoPreprocessor:
     def setFrameToVidCap(self, frame, i):
         self.video_writer.write(frame.astype(np.uint8))
 
+    def get_initial_angle(self, start):
+        if os.path.isfile(self._dump_path("initial_angle")):
+            return np.load(self._dump_path("initial_angle"))
+        else:
+            initial_angle = float(self.compute_angles(start, start + 1, 1, 1800, 200, False)[0]) + PITCH_ANGLE
+            self.dump("angles", initial_angle)
+            return initial_angle
+
     def preprocess_video(self):
         """
         Applies preprocessing to the video, including cropping, rotating frames,
@@ -568,7 +616,7 @@ class VideoPreprocessor:
         else:
             start, end = 0, 999999
 
-        angle = float(self.compute_angles(start, start + 1, 1, 1800, 200, False)[0]) + PITCH_ANGLE
+        angle = self.get_initial_angle(start)
 
         if LOAD_VIDEO_TO_RAM:
             getFrame = self.getFrameFromRAM
@@ -576,9 +624,9 @@ class VideoPreprocessor:
         else:
             getFrame = self.getFrameFromVidCap
             setFrame = self.setFrameToVidCap
-            self.video_capture = cv2.VideoCapture(self.video_path)
             self.video_capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
-            self.video_writer = cv2.VideoWriter(str(self.get_output_video_file_path()),
+            color = 1 if self.dm else 0
+            self.video_writer = cv2.VideoWriter(str(self.get_output_video_file_path(self.dm)),
                                                 apiPreference=cv2.CAP_FFMPEG,
                                                 fourcc=cv2.VideoWriter_fourcc(*CODEC),
                                                 fps=self.video_capture.get(cv2.CAP_PROP_FPS),
@@ -587,7 +635,7 @@ class VideoPreprocessor:
                                                     cv2.VIDEOWRITER_PROP_DEPTH,
                                                     cv2.CV_8U,
                                                     cv2.VIDEOWRITER_PROP_IS_COLOR,
-                                                    0,
+                                                    color,
                                                 ]
                                                 )
 
@@ -610,12 +658,24 @@ class VideoPreprocessor:
             rotate_matrix = cv2.getRotationMatrix2D((frame.shape[1] / 2, frame.shape[0] / 2), angle, 1)
 
             start_time = time.time()
-            rotated_image = cv2.warpAffine(
-                src=frame,
-                M=rotate_matrix,
-                dsize=(frame.shape[1], frame.shape[0]),
-                flags=cv2.INTER_CUBIC
-            )[PADDING:Y2 - Y1 + PADDING, PADDING:X2 - X1 + PADDING]
+            if frame.ndim == 3:
+                rotated_channels = [
+                    cv2.warpAffine(
+                        frame[:, :, c],
+                        rotate_matrix,
+                        dsize=(frame.shape[1], frame.shape[0]),
+                        flags=cv2.INTER_CUBIC
+                    ) for c in range(3)
+                ]
+                rotated_image = np.stack(rotated_channels, axis=-1)
+            else:
+                rotated_image = cv2.warpAffine(
+                    frame,
+                    rotate_matrix,
+                    dsize=(frame.shape[1], frame.shape[0]),
+                    flags=cv2.INTER_CUBIC
+                )
+            rotated_image = rotated_image[PADDING:Y2 - Y1 + PADDING, PADDING:X2 - X1 + PADDING]
             time_rotation += time.time() - start_time
 
             start_time = time.time()
@@ -664,14 +724,17 @@ class VideoPreprocessor:
         plt.savefig(self._dump_path("angles", "png"))
         plt.close()
 
-    def get_output_video_file_path(self):
+    def get_output_video_file_path(self, dm=False):
         """
         Retrieves the path for the output processed video file.
 
         Returns:
             str: Path to the output video file.
         """
-        return self.output_video_file_path
+        if dm and hasattr(self, 'dm_output_video_file_path'):
+            return self.dm_output_video_file_path
+        else:
+            return self.output_video_file_path
 
     def get_intervals(self):
         """

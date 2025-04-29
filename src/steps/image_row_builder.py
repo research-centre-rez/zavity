@@ -20,11 +20,13 @@ class ImageRowBuilder:
     frames: np.ndarray
     motions: VideoMotion
 
-    def __init__(self, frames, motions, intervals, video_file_path):
+    def __init__(self, frames, motions, intervals, video_file_path, dm_video_file_path):
         cv2.setNumThreads(N_CPUS)
         self.motions = motions
         self.intervals = intervals
         self.video_file_path = video_file_path
+        self.video_name = os.path.basename(video_file_path)
+        self.video_file_path = dm_video_file_path
         if LOAD_VIDEO_TO_RAM:
             self.frames = frames
             self.width, self.height = frames.shape[2], frames.shape[1]
@@ -347,20 +349,51 @@ class ImageRowBuilder:
                 shift = self.sinusoid(j, A, B / SINUSOID_SAMPLING, C, 0)
                 max_shift = max(max_shift, abs(shift))  # Update maximum shift
 
-                # Shift the whole column
-                # Use np.roll to shift the column by the calculated value
-                new_column = np.roll(image[:, j], int(shift))
-
-                # Assign the shifted column back to the output image
-                output_image[:, j] = new_column
+                # Check if grayscale or color
+                if image.ndim == 2:
+                    # Grayscale case
+                    new_column = np.roll(image[:, j], int(shift))
+                    output_image[:, j] = new_column
+                elif image.ndim == 3:
+                    # Color case — shift each channel separately
+                    new_column = np.roll(image[:, j, :], int(shift), axis=0)
+                    output_image[:, j, :] = new_column
+                else:
+                    raise ValueError(f"Unsupported image shape {image.shape}")
 
             # Crop the image to remove the wrapped-around pixels
             if max_shift > 0:
-                output_image = output_image[int(max_shift): -int(max_shift), :]
+                if output_image.ndim == 2:
+                    output_image = output_image[int(max_shift): -int(max_shift), :]
+                else:
+                    output_image = output_image[int(max_shift): -int(max_shift), :, :]
 
             rows.append(output_image)
 
         return rows
+
+    def _dump_path(self, object_name, extension='npy'):
+        """
+        Generates a path for saving or loading a specific object related to the video.
+
+        Args:
+            object_name (str): Name of the object to save/load.
+            extension (str): File extension for the object. Defaults to 'npy'.
+
+        Returns:
+            str: Path to the file.
+        """
+        return os.path.join(OUTPUT_FOLDER, os.path.splitext(self.video_name)[0] + f'-{object_name}.{extension}')
+
+    def dump(self, name: str, obj):
+        """
+        Saves an object to a file using numpy's save function.
+
+        Args:
+            name (str): Name of the object.
+            obj: The object to save.
+        """
+        np.save(self._dump_path(name), obj)
 
     def remove_sin_transform(self, rows):
         """
@@ -373,10 +406,16 @@ class ImageRowBuilder:
             list[np.ndarray]: Corrected image rows.
         """
         if rows:
-            movementses = self.calculate_movements(rows)
-            movementses = self.detrend_movements(movementses)
-            params = self.fitSin(movementses)
-            logging.debug(f"\nParameters for sinusoidal transformation:\n{params}\n")
+            if os.path.isfile(self._dump_path("sinusoidalFit")):
+                params = np.load(self._dump_path("sinusoidalFit"))
+                logging.debug(f"Loaded {self._dump_path('sinusoidalFit')}\n{params}\n")
+            else:
+                movementses = self.calculate_movements(rows)
+                movementses = self.detrend_movements(movementses)
+                params = self.fitSin(movementses)
+                self.dump("sinusoidalFit", params)
+
+            logging.debug(f"Parameters for sinusoidal transformation:\n{params}\n")
             rows = self.remove_sinusoidal_transformation(rows, params)
 
         return rows
@@ -421,7 +460,6 @@ class ImageRowBuilder:
         frames_per_360_deg = self.motions.get_frames_per360()
         direction = self.motions.get_direction()
 
-
         image_part = self.height
 
         if LOAD_VIDEO_TO_RAM:
@@ -431,13 +469,20 @@ class ImageRowBuilder:
 
         offset = max(0, math.ceil(start - (blended_pixels_per_frame // 2) / shift_per_frame))
         n_frames = math.ceil(frames_per_360_deg + (blended_pixels_per_frame - 1) / shift_per_frame)
-
         frame_shift_to_pixels_total = math.ceil(n_frames * shift_per_frame) + (blended_pixels_per_frame - 1) * 2
-        row_image = np.zeros(
-            (frame_size[0],
-             frame_shift_to_pixels_total))
 
-        weight_matrix = np.zeros(row_image.shape)
+        frame_example = getFrame(offset)  # Load one frame to check dimensions
+        if frame_example.ndim == 3:
+            channels = frame_example.shape[2]
+        else:
+            channels = 1
+
+        if channels == 1:
+            row_image = np.zeros((frame_size[0], frame_shift_to_pixels_total), dtype=np.float32)
+            weight_matrix = np.zeros_like(row_image)
+        else:
+            row_image = np.zeros((frame_size[0], frame_shift_to_pixels_total, channels), dtype=np.float32)
+            weight_matrix = np.zeros((frame_size[0], frame_shift_to_pixels_total, channels), dtype=np.float32)
 
         for frameNo in tqdm(range(0, n_frames), desc="Building row image"):
             image = getFrame(offset + frameNo)  # shape (h, w), grayscale
@@ -450,28 +495,43 @@ class ImageRowBuilder:
                 [0, 1, 0]
             ])
 
-            aligned_image = cv2.warpAffine(image, shift_matrix, (frame_size[1] + 1, frame_size[0]))
+            if channels == 1:
+                aligned_image = cv2.warpAffine(image, shift_matrix, (frame_size[1] + 1, frame_size[0]))
+            else:
+                aligned_channels = [
+                    cv2.warpAffine(image[:, :, c], shift_matrix, (frame_size[1] + 1, frame_size[0]))
+                    for c in range(channels)
+                ]
+                aligned_image = np.stack(aligned_channels, axis=-1)
 
             crop_x_start = math.floor(shift)
             crop_x_end = max(0, crop_x_start + blended_pixels_per_frame)
 
             # Add the cropped aligned image slice to row_image and weight matrix
             try:
-                row_image[:, crop_x_start:crop_x_end] += aligned_image[:, (image_part // 2 - blended_pixels_per_frame // 2) + blended_pixels_shift:
-                                                            (image_part // 2 + 1 + blended_pixels_per_frame // 2) + blended_pixels_shift]
-            except:
+                if channels == 1:
+                    row_image[:, crop_x_start:crop_x_end] += aligned_image[:, (image_part // 2 - blended_pixels_per_frame // 2) + blended_pixels_shift:
+                                                                              (image_part // 2 + 1 + blended_pixels_per_frame // 2) + blended_pixels_shift]
+                    weight_matrix[:, crop_x_start:crop_x_end] += 1
+                else:
+                    row_image[:, crop_x_start:crop_x_end, :] += aligned_image[:, (image_part // 2 - blended_pixels_per_frame // 2) + blended_pixels_shift:
+                                                                                 (image_part // 2 + 1 + blended_pixels_per_frame // 2) + blended_pixels_shift,:]
+                    weight_matrix[:, crop_x_start:crop_x_end, :] += 1
+            except Exception:
                 raise Exception(f"Row builder failed on adding slice to row_image.\n"
                                 f"Row image shape{row_image.shape}\n"
                                 f"Crop from {crop_x_start} to {crop_x_end}\n"
                                 f"Adding image of shape {aligned_image.shape}\n"
                                 f"Offset {offset}\n"
                                 f"Frame {frameNo}")
-            weight_matrix[:, crop_x_start:crop_x_end] += 1
 
         # Normalize and crop borders
         row_size = math.floor(frames_per_360_deg * shift_per_frame)
         start_col = (row_image.shape[1] - row_size) // 2
         end_col = start_col + row_size
-        row_image = (row_image / weight_matrix)[:, start_col:end_col]
+        if channels == 1:
+            row_image = (row_image / weight_matrix)[:, start_col:end_col]
+        else:
+            row_image = (row_image / weight_matrix)[:, start_col:end_col, :]
 
         return np.copy(row_image)

@@ -4,7 +4,7 @@ INPUT_FOLDER = "../input"
 
 # CONFIGURABLE
 VERBOSE = True  # plotting and image saving for debugging purposes
-TESTING_MODE = True  # testing mode does not blend rows during stitching and draws rectangles on margin, so they are
+TESTING_MODE = False  # testing mode does not blend rows during stitching and draws rectangles on margin, so they are
 # visible, also print intermediate row images (pre_sin, rolled)
 N_CPUS = 80  # specifies number of cpus used during parallelization
 RECTIFY = True  # Rectification of len's distortion can be set as False to decrease computation time but slightly
