@@ -85,8 +85,9 @@ class VideoPreprocessor:
                              f"{self.borderBreakpoints}\n")
             else:
                 logging.info(f"Pre-processing video: {self.video_name}")
-                with timing("Load Frames"):
-                    self.loadFrames()
+                if LOAD_VIDEO_TO_RAM:
+                    with timing("Load Frames"):
+                        self.loadFrames()
                 self.load_or_compute()
         else:
             self.output_video_file_path = self.video_name
