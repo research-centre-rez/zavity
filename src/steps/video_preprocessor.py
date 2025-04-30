@@ -93,10 +93,10 @@ class VideoPreprocessor:
         If video already exists, it loads computed data which are needed in next steps.
         """
 
-        if os.path.isfile(self._dump_path("borderBreakpoints")):
-            self.breakpoints = np.load(self._dump_path("borderBreakpoints"))
+        if os.path.isfile(self._dump_path("breakpoints")):
+            self.breakpoints = np.load(self._dump_path("breakpoints"))
             logging.debug(
-                f"Loaded {self._dump_path('borderBreakpoints')}\n"
+                f"Loaded {self._dump_path('breakpoints')}\n"
                 f"{self.breakpoints}\n"
             )
         if REMOVE_ROTATION:
