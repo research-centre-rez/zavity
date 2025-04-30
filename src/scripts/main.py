@@ -28,6 +28,10 @@ def timing(name):
 def configure_logging(filename):
     log_formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
 
+    # Clear existing handlers
+    for handler in logging.root.handlers[:]:
+        logging.root.removeHandler(handler)
+
     # File handler
     file_handler = logging.FileHandler(os.path.join(OUTPUT_FOLDER, f"{filename}.log"))
     file_handler.setFormatter(log_formatter)
@@ -38,11 +42,10 @@ def configure_logging(filename):
     console_handler.setFormatter(log_formatter)
     console_handler.setLevel(logging.INFO)
 
-    # Configure root logger
-    logging.basicConfig(
-        handlers=[file_handler, console_handler],
-        level=logging.DEBUG
-    )
+    # Add handlers manually instead of basicConfig
+    logging.getLogger().setLevel(logging.DEBUG)
+    logging.getLogger().addHandler(file_handler)
+    logging.getLogger().addHandler(console_handler)
 
 
 def process_single_video(video_name, calc_rot_per_frame, dm_video_name):
@@ -59,10 +62,12 @@ def process_single_video(video_name, calc_rot_per_frame, dm_video_name):
 
 
 def process_multiple_videos(folder_path, calc_rot_per_frame):
+    configure_logging(os.path.basename(folder_path))
     logging.info(f"Processing multiple videos in folder: {folder_path}. Output will be saved to {OUTPUT_FOLDER}.")
     # List all video files in the specified folder
     for filename in os.listdir(folder_path):
         configure_logging(filename)
+        logging.info(f"Processing video: {filename}.")
         video_path = os.path.join(folder_path, filename)
         if os.path.isfile(video_path):
             process_video(video_path, calc_rot_per_frame)
@@ -82,13 +87,12 @@ def process_video(video_path, calc_rot_per_frame, dm_video_path=None):
             motions = VideoMotion(frames, video_file_path, preprocessor.get_intervals())
             motions.process()
 
-        constructor = ImageRowBuilder(
-            frames,
-            motions,
-            preprocessor.get_intervals(),
-            preprocessor.get_output_video_file_path(),
-            preprocessor.get_output_video_file_path(True)
-        )
+        with timing("RowBuilder"):
+            constructor = ImageRowBuilder(
+                frames, motions, preprocessor.get_intervals(),
+                preprocessor.get_output_video_file_path(),
+                preprocessor.get_output_video_file_path(True)
+            )
         with timing("RowBuilder"):
             rows = constructor.construct_rows()
 

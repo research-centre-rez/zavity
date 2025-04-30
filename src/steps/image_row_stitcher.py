@@ -132,136 +132,9 @@ class ImageRowStitcher:
         self.stitchImageRows()
         self.dumpOIO()
 
-    def _dump_path(self, object_name):
-        """
-        Generates a path for saving or loading an object.
-
-        Args:
-            object_name (str): Name of the object.
-
-        Returns:
-            str: Path to the file.
-        """
-        return os.path.join(OUTPUT_FOLDER, os.path.splitext(self.video_name)[0] + f'-{object_name}.npy')
-
-    def dump(self, name: str, object):
-        """
-        Saves an object to a .npy file.
-
-        Args:
-            name (str): Name of the object.
-            object: Object to save.
-        """
-        np.save(self._dump_path(name), object)
-
-    def dumpOIO(self):
-        """
-        Saves the final blended stitched image to the output path.
-        """
-        iio.imwrite(self.output_oio_path, self.blended_full_image.astype(np.uint8))
-
-    @staticmethod
-    def mutual_information(imgA, imgB, bins=15):
-        """
-        Computes the mutual information between two images.
-
-        Args:
-            imgA (np.ndarray): First image.
-            imgB (np.ndarray): Second image.
-            bins (int): Number of bins for the histogram.
-
-        Returns:
-            float: Mutual information value.
-        """
-        # taken from https://matthew-brett.github.io/teaching/mutual_information.html
-        hist_2d, x_edges, y_edges = np.histogram2d(
-            imgA.ravel(),
-            imgB.ravel(),
-            bins=bins
-        )
-        pxy = hist_2d / float(np.sum(hist_2d))
-        px = np.sum(pxy, axis=1)  # marginal for x over y
-        py = np.sum(pxy, axis=0)  # marginal for y over x
-        px_py = px[:, None] * py[None, :]  # Broadcast to multiply marginals
-
-        # Now we can do the calculation using the pxy, px_py 2D arrays
-        nzs = pxy > 0  # Only non-zero pxy values contribute to the sum
-        return np.sum(pxy[nzs] * np.log(pxy[nzs] / px_py[nzs]))
-
-    @staticmethod
-    def extract_images_and_compute_score(shift, imgA, imgB, seed_position, width, height):
-        """
-        Extracts image regions and computes mutual information.
-
-        Args:
-            shift (tuple): Shift applied to the image.
-            imgA (np.ndarray): Fixed image.
-            imgB (np.ndarray): Moving image.
-            seed_position (np.ndarray): Seed position for alignment.
-            width (int): Width of the region.
-            height (int): Height of the region.
-
-        Returns:
-            float: Negative mutual information.
-        """
-        x = np.arange(
-            seed_position[1, 0] + SEARCH_SPACE_SIZE[0] + shift[0],
-            seed_position[1, 0] + SEARCH_SPACE_SIZE[0] + shift[0] + height - 0.5
-        )
-        y = np.arange(
-            seed_position[1, 1] + SEARCH_SPACE_SIZE[1] + shift[1],
-            seed_position[1, 1] + SEARCH_SPACE_SIZE[1] + shift[1] + width - 0.5
-        )
-        xg, yg = np.meshgrid(x, y)
-        interp = RegularGridInterpolator((np.arange(imgB.shape[0]), np.arange(imgB.shape[1])), imgB)
-        try:
-            imgB_interpolated = interp((xg, yg))
-        except Exception:
-            logging.critical(
-                f"Interpolation during score computing went wrong\n"
-                f"Seed position: {seed_position}\n"
-                f"Shift: {shift}\n"
-                f"ImgB shape: {imgB.shape}"
-            )
-
-            raise Exception(
-                f"Interpolation during score computing went wrong\n"
-                f"Seed position: {seed_position}\n"
-                f"Shift: {shift}\n"
-                f"ImgB shape: {imgB.shape}"
-            )
-
-        return -ssim(
-            imgA[
-                seed_position[0, 0] + SEARCH_SPACE_SIZE[0]: seed_position[0, 0] + SEARCH_SPACE_SIZE[0] + height,
-                seed_position[0, 1] + SEARCH_SPACE_SIZE[1]: seed_position[0, 1] + SEARCH_SPACE_SIZE[1] + width
-            ].T,
-            imgB_interpolated,
-            data_range=255
-        )
-
-    def to_minimize(self, x):
-        """
-        Objective function for optimization, minimizes mutual information.
-
-        Args:
-            x (tuple): Shift values.
-
-        Returns:
-            float: Negative mutual information for given shift.
-        """
-        return self.extract_images_and_compute_score(
-            shift=x,
-            imgA=self.imgA,
-            imgB=self.imgB,
-            seed_position=self.seed_position,
-            height=self.imgA.shape[0] - abs(self.physics["shift"]) - 2 * SEARCH_SPACE_SIZE[0],
-            width=self.imgA.shape[1] - abs(self.physics["roll"]) - 2 * SEARCH_SPACE_SIZE[1]
-        )
-
     def computePositions(self):
         """
-        Computes relative shifts between image rows based on mutual information alignment.
+        Computes relative shifts between image rows based on Structural similarity index measure.
         """
         # TODO: Find out why is it consistently '-20'
         self.physics["shift"] = int(self.motions.get_average_vertical_shift() - 20)
@@ -321,6 +194,87 @@ class ImageRowStitcher:
         logging.debug(f"Calculated: per row shift\n"
               f"{self.per_row_shift}")
 
+    def to_minimize(self, x):
+        """
+        Objective function for optimization, minimizes mutual information.
+
+        Args:
+            x (tuple): Shift values.
+
+        Returns:
+            float: Negative mutual information for given shift.
+        """
+        return self.extract_images_and_compute_score(
+            shift=x,
+            imgA=self.imgA,
+            imgB=self.imgB,
+            seed_position=self.seed_position,
+            height=self.imgA.shape[0] - abs(self.physics["shift"]) - 2 * SEARCH_SPACE_SIZE[0],
+            width=self.imgA.shape[1] - abs(self.physics["roll"]) - 2 * SEARCH_SPACE_SIZE[1]
+        )
+
+    @staticmethod
+    def extract_images_and_compute_score(shift, imgA, imgB, seed_position, width, height):
+        """
+        Extracts image regions and computes mutual information.
+
+        Args:
+            shift (tuple): Shift applied to the image.
+            imgA (np.ndarray): Fixed image.
+            imgB (np.ndarray): Moving image.
+            seed_position (np.ndarray): Seed position for alignment.
+            width (int): Width of the region.
+            height (int): Height of the region.
+
+        Returns:
+            float: Negative mutual information.
+        """
+        x = np.arange(
+            seed_position[1, 0] + SEARCH_SPACE_SIZE[0] + shift[0],
+            seed_position[1, 0] + SEARCH_SPACE_SIZE[0] + shift[0] + height - 0.5
+        )
+        y = np.arange(
+            seed_position[1, 1] + SEARCH_SPACE_SIZE[1] + shift[1],
+            seed_position[1, 1] + SEARCH_SPACE_SIZE[1] + shift[1] + width - 0.5
+        )
+        xg, yg = np.meshgrid(x, y)
+        interp = RegularGridInterpolator((np.arange(imgB.shape[0]), np.arange(imgB.shape[1])), imgB)
+        try:
+            imgB_interpolated = interp((xg, yg))
+        except Exception:
+            logging.critical(
+                f"Interpolation during score computing went wrong\n"
+                f"Seed position: {seed_position}\n"
+                f"Shift: {shift}\n"
+                f"ImgB shape: {imgB.shape}"
+            )
+
+            raise Exception(
+                f"Interpolation during score computing went wrong\n"
+                f"Seed position: {seed_position}\n"
+                f"Shift: {shift}\n"
+                f"ImgB shape: {imgB.shape}"
+            )
+
+        return -ssim(
+            imgA[
+                seed_position[0, 0] + SEARCH_SPACE_SIZE[0]: seed_position[0, 0] + SEARCH_SPACE_SIZE[0] + height,
+                seed_position[0, 1] + SEARCH_SPACE_SIZE[1]: seed_position[0, 1] + SEARCH_SPACE_SIZE[1] + width
+            ].T,
+            imgB_interpolated,
+            data_range=255
+        )
+
+    def rollImageRows(self):
+        """
+        Applies calculated shifts to align image rows horizontally.
+        """
+        self.rolledImageRows.append(self.imageRows[0])
+        for en, row_shift in tqdm(enumerate(np.cumsum(self.per_row_shift[:, 1])), total=self.per_row_shift.shape[0],
+                                  desc="Rolling image for stitching"):
+            self.rolledImageRows.append(
+                self.real_roll(self.imageRows[en + 1], self.signed_mod(row_shift, self.imageRows[en + 1].shape[1])))
+
     @staticmethod
     def real_roll(array, shift, axis=0):
         """
@@ -374,20 +328,6 @@ class ImageRowStitcher:
             return np.stack(rolled_channels, axis=2)
         else:
             raise ValueError(f"Unsupported array shape {array.shape}. Must be 2D or 3D.")
-
-    @staticmethod
-    def signed_mod(val, mod_base):
-        return ((val + mod_base // 2) % mod_base) - mod_base // 2
-
-    def rollImageRows(self):
-        """
-        Applies calculated shifts to align image rows horizontally.
-        """
-        self.rolledImageRows.append(self.imageRows[0])
-        for en, row_shift in tqdm(enumerate(np.cumsum(self.per_row_shift[:, 1])), total=self.per_row_shift.shape[0],
-                                  desc="Rolling image for stitching"):
-            self.rolledImageRows.append(
-                self.real_roll(self.imageRows[en + 1], self.signed_mod(row_shift, self.imageRows[en + 1].shape[1])))
 
     def stitchImageRows(self):
         """
@@ -471,3 +411,35 @@ class ImageRowStitcher:
         stitched_image = full_image / blend_matrix
 
         self.blended_full_image = stitched_image
+
+    def _dump_path(self, object_name):
+        """
+        Generates a path for saving or loading an object.
+
+        Args:
+            object_name (str): Name of the object.
+
+        Returns:
+            str: Path to the file.
+        """
+        return os.path.join(OUTPUT_FOLDER, os.path.splitext(self.video_name)[0] + f'-{object_name}.npy')
+
+    def dump(self, name: str, object):
+        """
+        Saves an object to a .npy file.
+
+        Args:
+            name (str): Name of the object.
+            object: Object to save.
+        """
+        np.save(self._dump_path(name), object)
+
+    def dumpOIO(self):
+        """
+        Saves the final blended stitched image to the output path.
+        """
+        iio.imwrite(self.output_oio_path, self.blended_full_image.astype(np.uint8))
+
+    @staticmethod
+    def signed_mod(val, mod_base):
+        return ((val + mod_base // 2) % mod_base) - mod_base // 2

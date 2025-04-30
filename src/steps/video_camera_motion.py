@@ -13,7 +13,7 @@ from config.config import (N_CPUS, MOTION_SAMPLING, MOTION_DOWNSCALE, ROW_ROTATI
 
 class VideoMotion:
     """
-    Handles motion detection and speed calculation for video preprocessing.
+    Handles motion detection and speed calculation.
 
     Attributes:
         speeds (dict[str, float]): Dictionary containing horizontal and vertical speeds.
@@ -28,6 +28,7 @@ class VideoMotion:
         video_name (str): Name of the video file.
         frames_per_360 (int): Number of frames for a 360-degree rotation.
         cw (bool): Indicates whether the motion is clockwise.
+        frames (np.ndarray): Array of frames used when processing in RAM.
     """
     speeds: dict[str, float]
     stats: dict
@@ -48,6 +49,7 @@ class VideoMotion:
         Initializes the VideoMotion class.
 
         Args:
+            frames (np.ndarray): Array of frames used when processing in RAM.
             video_file_path (str): Path to the input video file.
             intervals (list): List of intervals with vertical computed during video preprocessing.
         """
@@ -59,6 +61,7 @@ class VideoMotion:
         self.intervals = np.array(intervals)
         if LOAD_VIDEO_TO_RAM:
             self.frames = frames
+            self.num_frames = len(frames)
             self.width, self.height = frames.shape[2] / MOTION_DOWNSCALE, frames.shape[1] / MOTION_DOWNSCALE
         else:
             self.video_capture = cv2.VideoCapture(video_file_path)
@@ -67,42 +70,12 @@ class VideoMotion:
         self.video_file_path = video_file_path
         self.video_name = os.path.basename(video_file_path)
 
-    @staticmethod
-    def get_corners(gray_frame, **feature_params):
+    def process(self):
         """
-        Detects corners in a grayscale frame using OpenCV's goodFeaturesToTrack.
-
-        Args:
-            gray_frame (np.ndarray): Grayscale image for corner detection.
-            **feature_params: Additional parameters for corner detection.
-
-        Returns:
-            np.ndarray: Detected corner points.
+        Processes motion analysis for the video.
         """
-        corners = cv2.goodFeaturesToTrack(gray_frame, **feature_params)
-        return corners
-
-    def _dump_path(self, obj_name):
-        """
-        Generates a file path for saving or loading objects.
-
-        Args:
-            obj_name (str): Name of the object to save/load.
-
-        Returns:
-            str: Full path to the file.
-        """
-        return os.path.join(OUTPUT_FOLDER, os.path.splitext(self.video_name)[0] + f'-{obj_name}.npy')
-
-    def dump(self, name: str, obj):
-        """
-        Saves an object as a NumPy file.
-
-        Args:
-            name (str): Name of the object.
-            obj: Object to save.
-        """
-        np.save(self._dump_path(name), obj)
+        logging.info(f"Processing VideoMotion for: {self.video_file_path}\n")
+        self.load_or_compute()
 
     def load_or_compute(self):
         """
@@ -130,55 +103,9 @@ class VideoMotion:
         else:
             self.compute()
 
-    def compute(self):
-        """
-        Computes speeds, intervals, and frames per 360-degree rotation.
-        """
-        self.compute_speeds()
-        self.compute_frames_per360()
-        self.dump("intervals", self.intervals)
-        with open(self._dump_path("speeds"), 'wb') as fp:
-            pickle.dump(self.speeds, fp)
-        with open(self._dump_path("stats"), 'wb') as fp:
-            pickle.dump(self.stats, fp)
-        self.dump("frames_per_360", self.frames_per_360)
-
-    @staticmethod
-    def get_common_direction(motion_direction):
-        """
-        Finds the most frequent motion direction.
-
-        Args:
-            motion_direction (list[int]): List of motion directions.
-
-        Returns:
-            int: Most common motion direction.
-        """
-        return stats.mode(motion_direction)
-
-    def process(self):
-        """
-        Processes motion analysis for the video.
-        """
-        logging.info(f"Processing VideoMotion for: {self.video_file_path}\n")
-        self.load_or_compute()
-
-    def getFrameFromRAM(self, i):
-        return self.frames[i]
-
-    def getFrameFromVidCap(self, i):
-        self.video_capture.set(cv2.CAP_PROP_POS_FRAMES, i)
-        success, frame = self.video_capture.read()
-
-        if not success or frame is None:
-            logging.critical(f"Failed to read frame {i}")
-            raise IOError(f"Failed to read frame {i}")
-
-        return cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-
     def compute_motion(self):
         """
-        Computes motion directions and positions for each frame in the video.
+        Computes motion directions and positions for each frame in the video using Optical Flow.
         """
         feature_params = dict(maxCorners=100,
                               qualityLevel=0.1,
@@ -253,40 +180,18 @@ class VideoMotion:
         if VERBOSE:
             self.plot_motion_trajectory()
 
-    def plot_motion_trajectory(self, start=0, end=4000):
+    def compute(self):
         """
-        Plots the cumulative horizontal and vertical motion over time
-        and saves the result to the specified path.
+        Computes speeds, intervals, and frames per 360-degree rotation.
         """
-        if not hasattr(self, "motion_positions") or len(self.motion_positions) == 0:
-            logging.warning("No motion data found. Run compute_motion() first.")
-            return
-
-        # Extract frame indices and displacements
-        frame_indices = [entry[0] for entry in self.motion_positions[:4000]]
-        horizontal_shifts = [entry[1] for entry in self.motion_positions[:4000]]
-        vertical_shifts = [entry[2] for entry in self.motion_positions[:4000]]
-
-        # Plot
-        from matplotlib import pyplot as plt
-        plt.figure(figsize=(10, 4))
-        plt.plot(frame_indices, horizontal_shifts, label="Horizontal Displacement", color="blue")
-        plt.plot(frame_indices, vertical_shifts, label="Vertical Displacement", color="red")
-        plt.xlabel("Frame Index")
-        plt.ylabel("Cumulative Displacement (pixels)")
-        plt.legend()
-        plt.tight_layout()
-        plt.savefig(os.path.join(OUTPUT_FOLDER, "motion.png"))
-        plt.close()
-
-    def get_intervals(self):
-        """
-        Retrieves motion intervals.
-
-        Returns:
-            np.ndarray: Detected intervals.
-        """
-        return self.intervals
+        self.compute_speeds()
+        self.compute_frames_per360()
+        self.dump("intervals", self.intervals)
+        with open(self._dump_path("speeds"), 'wb') as fp:
+            pickle.dump(self.speeds, fp)
+        with open(self._dump_path("stats"), 'wb') as fp:
+            pickle.dump(self.stats, fp)
+        self.dump("frames_per_360", self.frames_per_360)
 
     def compute_speeds(self):
         """
@@ -324,6 +229,161 @@ class VideoMotion:
             f"Vertical shift: {self.speeds['vertical_shift']}±{self.stats['vertical_shift_std']}\n"
             f"Clockwise: {self.get_direction()}\n"
             f"Moving down: {self.is_moving_down()}\nCalculated\n")
+
+    def compute_frames_per360(self):
+        """
+        Calculates the number of frames required for a 360-degree rotation using Optical Flow.
+        """
+        results = []
+
+        if LOAD_VIDEO_TO_RAM:
+            getFrame = self.getFrameFromRAM
+        else:
+            getFrame = self.getFrameFromVidCap
+
+        frame_shift = int(np.ceil(np.mean(self.intervals[:, 1] - self.intervals[:, 0]) / ROW_ROTATION_OVERLAP_RATIO))
+
+        for start, end in self.intervals:
+            samples = []
+            for i in range(20, 101, 20):
+                frame = int(start + i)
+                if frame_shift + frame < self.num_frames:
+                    a = getFrame(frame)
+                    b = getFrame(frame + frame_shift)
+
+                    feature_params = dict(maxCorners=50,
+                                          qualityLevel=0.1,
+                                          minDistance=50,
+                                          blockSize=7)
+
+                    lk_params = dict(winSize=(50, 50),
+                                     maxLevel=3,
+                                     criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.1))
+
+
+                    corners = cv2.goodFeaturesToTrack(a, **feature_params)
+
+                    p1, st, err = cv2.calcOpticalFlowPyrLK(a, b, corners, None, **lk_params)
+
+                    p1 = p1[st == 1]
+                    p0 = corners[st == 1]
+
+                    move = np.median(p1 - p0, axis=0)
+
+                    if self.get_direction() == 'CW':
+                        samples.append(move[0])
+                    else:
+                        samples.append(-move[0])
+                else:
+                    logging.warning(f"Frame {frame + frame_shift} exceeds max frame size {self.num_frames}. "
+                                    f"Start: {start}. End: {end}. Frame shift: {frame_shift}")
+
+            results.append(np.median(samples))
+
+        result = np.mean(results)
+        self.frames_per_360 = np.ceil(frame_shift + result / abs(self.speeds['horizontal'])).astype(int)
+        std_over_rows = np.std(results) / abs(self.speeds['horizontal'])
+        logging.debug(
+            f"Frames per 360: {frame_shift + result / abs(self.speeds['horizontal'])}±{std_over_rows} calculated from "
+            f"frame_shift: {frame_shift}")
+
+    @staticmethod
+    def get_corners(gray_frame, **feature_params):
+        """
+        Detects corners in a grayscale frame using OpenCV's goodFeaturesToTrack.
+
+        Args:
+            gray_frame (np.ndarray): Grayscale image for corner detection.
+            **feature_params: Additional parameters for corner detection.
+
+        Returns:
+            np.ndarray: Detected corner points.
+        """
+        corners = cv2.goodFeaturesToTrack(gray_frame, **feature_params)
+        return corners
+
+    def _dump_path(self, obj_name):
+        """
+        Generates a file path for saving or loading objects.
+
+        Args:
+            obj_name (str): Name of the object to save/load.
+
+        Returns:
+            str: Full path to the file.
+        """
+        return os.path.join(OUTPUT_FOLDER, os.path.splitext(self.video_name)[0] + f'-{obj_name}.npy')
+
+    def dump(self, name: str, obj):
+        """
+        Saves an object as a NumPy file.
+
+        Args:
+            name (str): Name of the object.
+            obj: Object to save.
+        """
+        np.save(self._dump_path(name), obj)
+
+    @staticmethod
+    def get_common_direction(motion_direction):
+        """
+        Finds the most frequent motion direction.
+
+        Args:
+            motion_direction (list[int]): List of motion directions.
+
+        Returns:
+            int: Most common motion direction.
+        """
+        return stats.mode(motion_direction)
+
+    def getFrameFromRAM(self, i):
+        return self.frames[i]
+
+    def getFrameFromVidCap(self, i):
+        self.video_capture.set(cv2.CAP_PROP_POS_FRAMES, i)
+        success, frame = self.video_capture.read()
+
+        if not success or frame is None:
+            logging.critical(f"Failed to read frame {i}")
+            raise IOError(f"Failed to read frame {i}")
+
+        return cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+
+    def plot_motion_trajectory(self, start=0, end=4000):
+        """
+        Plots the cumulative horizontal and vertical motion over time
+        and saves the result to the specified path.
+        """
+        if not hasattr(self, "motion_positions") or len(self.motion_positions) == 0:
+            logging.warning("No motion data found. Run compute_motion() first.")
+            return
+
+        # Extract frame indices and displacements
+        frame_indices = [entry[0] for entry in self.motion_positions[:4000]]
+        horizontal_shifts = [entry[1] for entry in self.motion_positions[:4000]]
+        vertical_shifts = [entry[2] for entry in self.motion_positions[:4000]]
+
+        # Plot
+        from matplotlib import pyplot as plt
+        plt.figure(figsize=(10, 4))
+        plt.plot(frame_indices, horizontal_shifts, label="Horizontal Displacement", color="blue")
+        plt.plot(frame_indices, vertical_shifts, label="Vertical Displacement", color="red")
+        plt.xlabel("Frame Index")
+        plt.ylabel("Cumulative Displacement (pixels)")
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(os.path.join(OUTPUT_FOLDER, "motion.png"))
+        plt.close()
+
+    def get_intervals(self):
+        """
+        Retrieves motion intervals.
+
+        Returns:
+            np.ndarray: Detected intervals.
+        """
+        return self.intervals
 
     def get_horizontal_speed(self):
         """
@@ -381,60 +441,6 @@ class VideoMotion:
 
     def get_average_horizontal_shift(self):
         return np.mean(self.intervals[:, 1] - self.intervals[:, 0]) * self.get_horizontal_speed()
-
-    def compute_frames_per360(self):
-        """
-        Calculates the number of frames required for a 360-degree rotation.
-        """
-        results = []
-
-        if LOAD_VIDEO_TO_RAM:
-            getFrame = self.getFrameFromRAM
-        else:
-            getFrame = self.getFrameFromVidCap
-
-        frame_shift = int(np.ceil(np.mean(self.intervals[:, 1] - self.intervals[:, 0]) / ROW_ROTATION_OVERLAP_RATIO))
-
-        for start, end in self.intervals:
-            samples = []
-            for i in range(20, 101, 20):
-                frame = int(start + i)
-                a = getFrame(frame)
-                b = getFrame(frame + frame_shift)
-
-                feature_params = dict(maxCorners=50,
-                                      qualityLevel=0.1,
-                                      minDistance=50,
-                                      blockSize=7)
-
-                lk_params = dict(winSize=(50, 50),
-                                 maxLevel=3,
-                                 criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.1))
-
-                err_threshold = 9
-
-                corners = cv2.goodFeaturesToTrack(a, **feature_params)
-
-                p1, st, err = cv2.calcOpticalFlowPyrLK(a, b, corners, None, **lk_params)
-
-                p1 = p1[st == 1]
-                p0 = corners[st == 1]
-
-                move = np.median(p1 - p0, axis=0)
-
-                if self.get_direction() == 'CW':
-                    samples.append(move[0])
-                else:
-                    samples.append(-move[0])
-
-            results.append(np.median(samples))
-
-        result = np.mean(results)
-        self.frames_per_360 = np.ceil(frame_shift + result / abs(self.speeds['horizontal'])).astype(int)
-        std_over_rows = np.std(results) / abs(self.speeds['horizontal'])
-        logging.debug(
-            f"Frames per 360: {frame_shift + result / abs(self.speeds['horizontal'])}±{std_over_rows} calculated from "
-            f"frame_shift: {frame_shift}")
 
     def get_frames_per360(self):
         """
