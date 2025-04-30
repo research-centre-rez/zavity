@@ -60,6 +60,8 @@ def process_multiple_videos(folder_path, calc_rot_per_frame):
     logging.info(f"Processing multiple videos in folder: {folder_path}. Output will be saved to {OUTPUT_FOLDER}.")
     # List all video files in the specified folder
     for filename in os.listdir(folder_path):
+        if not filename.lower().endswith(".mp4"):
+            continue
         configure_logging(filename)
         logging.info(f"Processing video: {filename}.")
         video_path = os.path.join(folder_path, filename)
