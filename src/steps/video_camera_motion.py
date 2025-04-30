@@ -246,8 +246,8 @@ class VideoMotion:
         for start, end in self.intervals:
             samples = []
             for i in range(20, 101, 20):
-                if i < self.num_frames:
-                    frame = int(start + i)
+                frame = int(start + i)
+                if frame_shift + frame < self.num_frames:
                     a = getFrame(frame)
                     b = getFrame(frame + frame_shift)
 
@@ -275,6 +275,9 @@ class VideoMotion:
                         samples.append(move[0])
                     else:
                         samples.append(-move[0])
+                else:
+                    logging.warning(f"Frame {frame + frame_shift} exceeds max frame size {self.num_frames}. "
+                                    f"Start: {start}. End: {end}. Frame shift: {frame_shift}")
 
             results.append(np.median(samples))
 
