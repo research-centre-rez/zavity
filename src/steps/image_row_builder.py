@@ -204,6 +204,7 @@ class ImageRowBuilder:
                 ax.legend()
                 plt.tight_layout()
                 plt.savefig(os.path.join(OUTPUT_FOLDER, "fig_stripe_highlight.png"))
+                plt.close()
 
             image = np.hstack((image,) * IMAGE_REPEATS)
 
@@ -239,6 +240,7 @@ class ImageRowBuilder:
                     plt.legend()
                     plt.tight_layout()
                     plt.savefig(os.path.join(OUTPUT_FOLDER, "fig_peaks_profile.png"))
+                    plt.close()
 
                 try:
                     if peaks_left.shape[0] > peaks_right.shape[0]:
@@ -277,6 +279,7 @@ class ImageRowBuilder:
                 plt.grid(True)
                 plt.tight_layout()
                 plt.savefig(os.path.join(OUTPUT_FOLDER, "fig_cumulative_shift.png"))
+                plt.close()
 
             movements_per_image.append(cumulative)
 
@@ -312,6 +315,7 @@ class ImageRowBuilder:
                 plt.grid(True)
                 plt.savefig(
                     os.path.join(OUTPUT_FOLDER, f"{os.path.splitext(self.video_file_path)[0]}_oio_{i}_detrend" + ".png"))
+                plt.close()
 
         return detrended_movementses
 
@@ -376,6 +380,7 @@ class ImageRowBuilder:
                 plt.grid(True)
                 plt.tight_layout()
                 plt.savefig(os.path.join(OUTPUT_FOLDER, "fig_residuals.png"))
+                plt.close()
 
             A, C, D, theta = params
             paramses.append((A, freq, C, D, theta))

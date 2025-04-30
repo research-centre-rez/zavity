@@ -272,6 +272,7 @@ class VideoPreprocessor:
                 plt.grid(True)
                 plt.tight_layout()
                 plt.savefig(os.path.join(OUTPUT_FOLDER, "filter_effect.png"))
+                plt.close()
 
                 kernel = savgol_coeffs(window_length=filter_length, polyorder=polyorder)
                 plt.figure(figsize=(6, 3))
@@ -282,6 +283,7 @@ class VideoPreprocessor:
                 plt.grid(True)
                 plt.tight_layout()
                 plt.savefig(os.path.join(OUTPUT_FOLDER, "sg_filter.png"))
+                plt.close()
 
             orientations = angles_filtered
 
@@ -496,18 +498,19 @@ class VideoPreprocessor:
             setFrame = self.setFrameToVidCap
             self.video_capture = cv2.VideoCapture(self.video_path)
             self.video_capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
-            self.video_writer = cv2.VideoWriter(str(self.get_output_video_file_path()),
-                                                apiPreference=cv2.CAP_FFMPEG,
-                                                fourcc=cv2.VideoWriter_fourcc(*CODEC),
-                                                fps=self.video_capture.get(cv2.CAP_PROP_FPS),
-                                                frameSize=(X2 - X1, Y2 - Y1),
-                                                params=[
-                                                    cv2.VIDEOWRITER_PROP_DEPTH,
-                                                    cv2.CV_8U,
-                                                    cv2.VIDEOWRITER_PROP_IS_COLOR,
-                                                    0,
-                                                ]
-                                                )
+            self.video_writer = cv2.VideoWriter(
+                str(self.get_output_video_file_path()),
+                apiPreference=cv2.CAP_FFMPEG,
+                fourcc=cv2.VideoWriter_fourcc(*CODEC),
+                fps=self.video_capture.get(cv2.CAP_PROP_FPS),
+                frameSize=(X2 - X1, Y2 - Y1),
+                params=[
+                    cv2.VIDEOWRITER_PROP_DEPTH,
+                    cv2.CV_8U,
+                    cv2.VIDEOWRITER_PROP_IS_COLOR,
+                    0,
+                ]
+            )
 
         time_read = 0
         time_remap = 0

@@ -284,8 +284,10 @@ def draw_regions(img, corners_subpix, Fr, Rf, Cr, show_id=True):
 def show_regions(img, corners_subpix, Fr, Rf, Cr, show_id=True):
     bgr = draw_regions(img, corners_subpix, Fr, Rf, Cr, show_id=True)
     import matplotlib.pyplot as plt
+    plt.figure()
     plt.imshow(bgr)
     plt.show()
+    plt.close()
 
 
 def common_regions_of_corners(i, j, Fr):
