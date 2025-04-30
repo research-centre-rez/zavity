@@ -61,6 +61,7 @@ class VideoMotion:
         self.intervals = np.array(intervals)
         if LOAD_VIDEO_TO_RAM:
             self.frames = frames
+            self.num_frames = len(frames)
             self.width, self.height = frames.shape[2] / MOTION_DOWNSCALE, frames.shape[1] / MOTION_DOWNSCALE
         else:
             self.video_capture = cv2.VideoCapture(video_file_path)
@@ -245,34 +246,35 @@ class VideoMotion:
         for start, end in self.intervals:
             samples = []
             for i in range(20, 101, 20):
-                frame = int(start + i)
-                a = getFrame(frame)
-                b = getFrame(frame + frame_shift)
+                if i < self.num_frames:
+                    frame = int(start + i)
+                    a = getFrame(frame)
+                    b = getFrame(frame + frame_shift)
 
-                feature_params = dict(maxCorners=50,
-                                      qualityLevel=0.1,
-                                      minDistance=50,
-                                      blockSize=7)
+                    feature_params = dict(maxCorners=50,
+                                          qualityLevel=0.1,
+                                          minDistance=50,
+                                          blockSize=7)
 
-                lk_params = dict(winSize=(50, 50),
-                                 maxLevel=3,
-                                 criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.1))
+                    lk_params = dict(winSize=(50, 50),
+                                     maxLevel=3,
+                                     criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.1))
 
-                err_threshold = 9
+                    err_threshold = 9
 
-                corners = cv2.goodFeaturesToTrack(a, **feature_params)
+                    corners = cv2.goodFeaturesToTrack(a, **feature_params)
 
-                p1, st, err = cv2.calcOpticalFlowPyrLK(a, b, corners, None, **lk_params)
+                    p1, st, err = cv2.calcOpticalFlowPyrLK(a, b, corners, None, **lk_params)
 
-                p1 = p1[st == 1]
-                p0 = corners[st == 1]
+                    p1 = p1[st == 1]
+                    p0 = corners[st == 1]
 
-                move = np.median(p1 - p0, axis=0)
+                    move = np.median(p1 - p0, axis=0)
 
-                if self.get_direction() == 'CW':
-                    samples.append(move[0])
-                else:
-                    samples.append(-move[0])
+                    if self.get_direction() == 'CW':
+                        samples.append(move[0])
+                    else:
+                        samples.append(-move[0])
 
             results.append(np.median(samples))
 
