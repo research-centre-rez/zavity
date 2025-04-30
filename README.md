@@ -12,6 +12,7 @@ Before running, navigate to configuration file located at `/src/config/config.py
 - `--mode {single,multiple}`: Specify the mode of operation (single video or multiple videos). If `single` you have to use argument `--video_name`. If `multiple` all files from `INPUT_FOLDER` (which is specified in configuration file `config.py`) are processed as videos.
 - `--video_name`: (Required if using `single` mode) Path to the video file.
 - `--calc_rot_per_frame`: (Default is False) Set to True to calculate its own rotation per frame, not using the precalculated one. Not recommended since it greatly increases computational time.
+- `--dm_video_name`: Specifies the name of the video for which a full depth map (DM) overview will be generated, aligned with the previously processed OIO from `--video_name`. This mode assumes that the OIO for the corresponding video has already been computed and that all necessary parameters are available in the output folder. This option is only available in `single` mode and requires `--calc_rot_per_frame` to be set to False.
 
 ## Running
 ### Docker Usage
