@@ -65,6 +65,7 @@ class VideoMotion:
             self.width, self.height = frames.shape[2] / MOTION_DOWNSCALE, frames.shape[1] / MOTION_DOWNSCALE
         else:
             self.video_capture = cv2.VideoCapture(video_file_path)
+            self.num_frames = int(self.video_capture.get(cv2.CAP_PROP_FRAME_COUNT))
             self.width = int(self.video_capture.get(cv2.CAP_PROP_FRAME_WIDTH) / MOTION_DOWNSCALE)
             self.height = int(self.video_capture.get(cv2.CAP_PROP_FRAME_HEIGHT) / MOTION_DOWNSCALE)
         self.video_file_path = video_file_path
@@ -246,35 +247,39 @@ class VideoMotion:
         for start, end in self.intervals:
             samples = []
             for i in range(20, 101, 20):
-                if i < self.num_frames:
-                    frame = int(start + i)
-                    a = getFrame(frame)
-                    b = getFrame(frame + frame_shift)
+                try:
+                    if i < self.num_frames:
+                        frame = int(start + i)
+                        a = getFrame(frame)
+                        b = getFrame(frame + frame_shift)
 
-                    feature_params = dict(maxCorners=50,
-                                          qualityLevel=0.1,
-                                          minDistance=50,
-                                          blockSize=7)
+                        feature_params = dict(maxCorners=50,
+                                              qualityLevel=0.1,
+                                              minDistance=50,
+                                              blockSize=7)
 
-                    lk_params = dict(winSize=(50, 50),
-                                     maxLevel=3,
-                                     criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.1))
+                        lk_params = dict(winSize=(50, 50),
+                                         maxLevel=3,
+                                         criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.1))
 
-                    err_threshold = 9
+                        err_threshold = 9
 
-                    corners = cv2.goodFeaturesToTrack(a, **feature_params)
+                        corners = cv2.goodFeaturesToTrack(a, **feature_params)
 
-                    p1, st, err = cv2.calcOpticalFlowPyrLK(a, b, corners, None, **lk_params)
+                        p1, st, err = cv2.calcOpticalFlowPyrLK(a, b, corners, None, **lk_params)
 
-                    p1 = p1[st == 1]
-                    p0 = corners[st == 1]
+                        p1 = p1[st == 1]
+                        p0 = corners[st == 1]
 
-                    move = np.median(p1 - p0, axis=0)
+                        move = np.median(p1 - p0, axis=0)
 
-                    if self.get_direction() == 'CW':
-                        samples.append(move[0])
-                    else:
-                        samples.append(-move[0])
+                        if self.get_direction() == 'CW':
+                            samples.append(move[0])
+                        else:
+                            samples.append(-move[0])
+                except IOError as io:
+                    logging.warning(f"We are at the end of file, number of frames returned by cv2 do not match reality {frame}+{frame_shift}: {io}")
+                    break
 
             results.append(np.median(samples))
 
@@ -343,7 +348,7 @@ class VideoMotion:
         success, frame = self.video_capture.read()
 
         if not success or frame is None:
-            logging.critical(f"Failed to read frame {i}")
+            logging.critical(f"video_capture.read(): Failed to read frame {i}")
             raise IOError(f"Failed to read frame {i}")
 
         return cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
