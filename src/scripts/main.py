@@ -66,7 +66,10 @@ def process_multiple_videos(folder_path, calc_rot_per_frame):
         logging.info(f"Processing video: {filename}.")
         video_path = os.path.join(folder_path, filename)
         if os.path.isfile(video_path):
-            process_video(video_path, calc_rot_per_frame)
+            try:
+                process_video(video_path, calc_rot_per_frame)
+            except Exception as e:
+                logging.error(f"Error processing video {filename}: {e}")
 
 
 def process_video(video_path, calc_rot_per_frame):
