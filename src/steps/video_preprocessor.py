@@ -197,38 +197,44 @@ class VideoPreprocessor:
             getFrame = self.getFrameFromVidCap
 
         for i in tqdm(range(start, end, step), desc=f"Computing angles from {start} to {end} with step {step}"):
-            frame = getFrame(i)
+            try:
+                frame = getFrame(i)
 
-            # Crop and downscale
-            frame = frame[Y1:Y2, X1:X2]
+                # Crop and downscale
+                frame = frame[Y1:Y2, X1:X2]
 
-            frame = cv2.resize(frame, (
-                frame.shape[1] // PREPROCESSOR_DOWNSCALE,
-                frame.shape[0] // PREPROCESSOR_DOWNSCALE))
-            frame = cv2.GaussianBlur(frame, (5, 5), 1)
+                frame = cv2.resize(frame, (
+                    frame.shape[1] // PREPROCESSOR_DOWNSCALE,
+                    frame.shape[0] // PREPROCESSOR_DOWNSCALE))
+                frame = cv2.GaussianBlur(frame, (5, 5), 1)
 
-            # Edge detection
-            edges = cv2.Canny(frame, 70, 180)
+                # Edge detection
+                edges = cv2.Canny(frame, 70, 180)
 
-            # Hough Transform
-            lines = cv2.HoughLinesP(edges, 1, np.pi / angle_precision, hough_treshold,
-                                    minLineLength=frame.shape[0] / 2.5, maxLineGap=frame.shape[0] / 3)
-            if lines is None:
-                logging.debug(f"No lines detected in frame {i}")
-                computed_angles.append(45)
-                continue
+                # Hough Transform
+                lines = cv2.HoughLinesP(edges, 1, np.pi / angle_precision, hough_treshold,
+                                        minLineLength=frame.shape[0] / 2.5, maxLineGap=frame.shape[0] / 3)
+                if lines is None:
+                    logging.debug(f"No lines detected in frame {i}")
+                    computed_angles.append(45)
+                    continue
 
-            # Extract angles and compute dominant
-            angles = []
-            for line in lines:
-                x1, y1, x2, y2 = line[0]
-                angle_rad = np.arctan2(y2 - y1, x2 - x1)
-                angles.append(np.rad2deg(angle_rad))
+                # Extract angles and compute dominant
+                angles = []
+                for line in lines:
+                    x1, y1, x2, y2 = line[0]
+                    angle_rad = np.arctan2(y2 - y1, x2 - x1)
+                    angles.append(np.rad2deg(angle_rad))
 
-            angle_median = np.median(angles)
-            if apply_abs:
-                angle_median = np.abs(angle_median)
-            computed_angles.append(angle_median)
+                angle_median = np.median(angles)
+                if apply_abs:
+                    angle_median = np.abs(angle_median)
+                computed_angles.append(angle_median)
+            except Exception as e:
+                logging.error(f"Wrong number of frames by FFMpeg: {e}")
+                logging.info("Updating number of frames to the correct value...")
+                self.num_frames = i
+                break
 
         logging.debug(f"Angles calculated from {start} to {end} with step {step}\n")
         return np.array(computed_angles)
