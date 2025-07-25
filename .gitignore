@@ -1,5 +1,6 @@
-notebooks/
 *.sh
 .idea
 .venv
 *.pyc
+*.ipynb
+.ipynb_checkpoints/
