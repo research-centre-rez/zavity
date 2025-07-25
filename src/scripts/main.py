@@ -73,7 +73,7 @@ def process_video(video_path, calc_rot_per_frame):
         with timing("Preprocessor"):
             from steps.video_preprocessor import VideoPreprocessor
             preprocessor = VideoPreprocessor(video_path, calc_rot_per_frame)
-            preprocessor.process()
+            preprocessor.process_or_load()
             video_file_path = preprocessor.get_output_video_file_path()
             frames = preprocessor.getProcessedFrames()
 

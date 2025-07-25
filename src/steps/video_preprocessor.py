@@ -1,7 +1,6 @@
 import os
 import logging
 import subprocess
-import time
 import cv2
 import matplotlib.pyplot as plt
 import numpy as np
@@ -9,6 +8,8 @@ from typing import LiteralString
 from scipy import stats
 from scipy.signal import savgol_filter, savgol_coeffs
 from tqdm.auto import tqdm
+import multiprocessing
+from scipy.optimize import minimize
 
 from config.config import (N_CPUS, Y1, Y2, X1, X2, PREPROCESSOR_SAMPLING, ROT_PER_FRAME, PADDING, OUTPUT_FOLDER,
                            RECTIFICATION_PARAMS_FOLDER, RECTIFY, INTERVAL_FILTER_TH, PREPROCESSOR_DOWNSCALE,
@@ -16,6 +17,7 @@ from config.config import (N_CPUS, Y1, Y2, X1, X2, PREPROCESSOR_SAMPLING, ROT_PE
                            VERBOSE)
 from scripts.main import timing
 from steps.video_rectifier import _load_calibration_parameters
+import pandas as pd
 
 
 class VideoPreprocessor:
@@ -60,11 +62,11 @@ class VideoPreprocessor:
         """
         cv2.setNumThreads(N_CPUS)
         self.video_path = video_path
+        self.angles = None
         self.calc_rot_per_frame = calc_rot_per_frame
         self.video_capture = cv2.VideoCapture(self.video_path)
         self.video_name = os.path.basename(self.video_path)
-        self.output_video_file_path = os.path.join(OUTPUT_FOLDER,
-                                                   os.path.splitext(self.video_name)[0] + '_preprocessed' + EXT)
+        self.output_video_file_path = self._dump_path(os.path.splitext(self.video_name)[0] + '_preprocessed', EXT)
         self.borderBreakpoints = []
         self.num_frames = int(self.video_capture.get(cv2.CAP_PROP_FRAME_COUNT))
         self.video_width = int(self.video_capture.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -75,23 +77,23 @@ class VideoPreprocessor:
         self.mapx, self.mapy = cv2.initUndistortRectifyMap(mtx, distortion, None, newcameramtx,
                                                            (self.video_width, self.video_height), 5)
 
-    def process(self):
+    def process_or_load(self):
         """
         Starts processing the video.
         If video already exists, it loads computed data which are needed in next steps.
         """
         if REMOVE_ROTATION:
             if os.path.isfile(self.get_output_video_file_path()) and os.path.isfile(
-                    self._dump_path("borderBreakpoints")):
-                self.borderBreakpoints = np.load(self._dump_path("borderBreakpoints"))
-                logging.debug(f"Loaded {self._dump_path('borderBreakpoints')}\n"
+                    self._dump_path("borderBreakpoints", extension="csv")):
+                self.borderBreakpoints = self.load_csv("borderBreakpoints")
+                logging.debug(f"Loaded {self._dump_path('borderBreakpoints', extension="csv")}\n"
                               f"{self.borderBreakpoints}\n")
             else:
                 logging.info(f"Pre-processing video: {self.video_name}")
                 if LOAD_VIDEO_TO_RAM:
                     with timing("Load Frames"):
                         self.loadFrames()
-                self.load_or_compute()
+                self._get_orientation_and_breakpoints()
                 self.preprocess_video()
         else:
             self.output_video_file_path = self.video_name
@@ -125,58 +127,157 @@ class VideoPreprocessor:
         pipe.wait()
         self.num_frames = len(self.frames)
 
-    def load_or_compute(self):
+    def _get_frame_centers(self):
+        """
+        Determines center of the mirror in the frame
+        """
+        def circle_error(center):
+            return np.sum(
+                np.sqrt(
+                    np.power(features[:, 0, 1] - center[1], 2) + np.power(features[:, 0, 0] - center[0], 2)) > radius
+            )
+
+        raw_centers = []
+        vidcap = cv2.VideoCapture(self.video_path)
+        frame_count = 0
+        for frame_id in tqdm(range(int(vidcap.get(cv2.CAP_PROP_FRAME_COUNT)))):
+            success, frame = vidcap.read()
+            if not success:
+                break
+            frame_count += 1
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            features = cv2.goodFeaturesToTrack(frame, 500, 0.01, 50)
+            circle_position = minimize(circle_error, x0=raw_centers[-1], method="Nelder-Mead")
+            raw_centers.append(circle_position.x)
+        vidcap.release()
+
+        refined_centers = np.stack([
+            savgol_filter(np.array(raw_centers)[:,0], 100, 1),
+            savgol_filter(np.array(raw_centers)[:, 1], 100, 1)])
+
+        df = pd.DataFrame(np.stack(
+            np.arange(frame_count),
+            raw_centers[:, 0],
+            raw_centers[:, 1],
+            refined_centers[:, 0],
+            refined_centers[:, 1]
+        ))
+
+        self.dump_csv("mirror_centers", df)
+
+
+
+    def _get_frame_orientation(self):
+        """
+        Determines the orientation of frames in a video.
+
+        This method computes the frame orientation either by loading pre-computed angles
+        from a file or by estimating them using the specified parameters if the file is
+        not found. The orientations are then stored and optionally saved as a CSV file.
+
+        Computation runs in parallel for every frame of the video.
+        Angles are then stored internally into the class struct angles.
+        """
+        if os.path.isfile(self._dump_path('full_angles', extension="csv")):
+            self.angles = self.load_csv('full_angles')
+        else:
+            self.angles = self.estimate_threads_orientation(step=1, angle_precision=1800, hough_treshold=200)
+            self.dump_csv("full_angles", pd.DataFrame(self.angles, columns=["frame number", "angle (rad)"]))
+
+    def _get_motor_breakpoints(self):
+        if self.angles is None:
+            self._get_frame_orientation()
+
+        if (os.path.isfile(self._dump_path("breakpoints", extension="csv")) and
+                os.path.isfile(self._dump_path("borderBreakpoints", extension="csv")) and
+                os.path.isfile(self._dump_path("segment-type", extension="csv"))):
+            self.borderBreakpoints = self.load_csv("borderBreakpoints")
+            logging.debug(f"Loaded {self._dump_path('borderBreakpoints')}: {self.borderBreakpoints}")
+            self.breakpoints = self.load_csv("breakpoints")
+            logging.debug(f"Loaded {self._dump_path('breakpoints')}: {self.breakpoints}")
+            self.segment_type = self.load_csv("segment-type")[:,1]
+            logging.debug(f"Loaded {self._dump_path('segment-type')}.")
+        else:
+            with timing("Compute Breakpoints"):
+                #self.breakpoints = self.compute_breakpoint_candidates(self.angles[:,1])
+                self.breakpoints = self.compute_breakpoint_candidates(self.angles[:,1], filter_length=8, step=1, merge_threshold=10)
+            self.dump_csv("breakpoints", pd.DataFrame(self.breakpoints, columns=["frame number"]))
+            self.dump_csv("segment-type",
+                          pd.DataFrame(np.stack([self.angles[:-1, 0], self.segment_type], axis=1),
+                                       columns=["frame number", "derivative sign"]))
+            with timing("Compute Border Breakpoints"):
+                #border_breakpoints = self.filter_breakpoint_candidates(self.breakpoints, PREPROCESSOR_SAMPLING)
+                # NOTE: there are two calls, it is necessary to say what is more precise
+                border_breakpoints = self.filter_breakpoint_candidates(self.breakpoints, 1)
+            with timing("Compute Border Breakpoints"):
+                self.borderBreakpoints = self.refine_breakpoints(border_breakpoints, step=1)
+            self.dump_csv("borderBreakpoints", pd.DataFrame(self.borderBreakpoints, columns=["start", "end"]))
+
+
+        self.plot_angles(self.angles, breakpoint_candidates=self.breakpoints, breakpoints=self.borderBreakpoints)
+
+    def _get_orientation_and_breakpoints(self):
         """
         Loads or computes rotation per frames (if required), threads orientation, and breakpoints for the video.
         """
         if self.calc_rot_per_frame:
-            if os.path.isfile(self._dump_path('full_angles')):
-                angles = np.load(self._dump_path('full_angles'))
-            else:
-                angles = self.estimate_threads_orientation(step=1, angle_precision=1800, hough_treshold=200)
-                self.dump('full_angles', angles)
-            breakpoints = self.compute_breakpoint_candidates(angles, filter_length=8, step=1, merge_threshold=10)
-            border_breakpoints = self.filter_breakpoint_candidates(breakpoints, 1)
-            self.plot_angles(angles, breakpoint_candidates=breakpoints, breakpoints=border_breakpoints)
-            self.rotation_per_frame = self.compute_rotation_per_frame(angles, breakpoints, border_breakpoints)
+            self._get_motor_breakpoints()  # includes frame orientation
+            self.rotation_per_frame = self.compute_rotation_per_frame(self.angles[:,1], self.breakpoints, self.borderBreakpoints)
             logging.debug(f"Calculated rotation per frame\n"
                           f"{self.rotation_per_frame}\n"
                           f"Precalculated rotation per frame\n"
                           f"{ROT_PER_FRAME}\n"
                           f"Difference: {self.rotation_per_frame - ROT_PER_FRAME}\n")
         else:
+            self._get_frame_orientation()
             self.rotation_per_frame = ROT_PER_FRAME
             logging.debug(f"Loaded precalculated rotation per frame\n"
                           f"{self.rotation_per_frame}\n")
+            if VERBOSE:
+                self.plot_angles(self.angles, breakpoints=self.borderBreakpoints, breakpoint_candidates=self.breakpoints,
+                                 step=PREPROCESSOR_SAMPLING)
 
-        if os.path.isfile(self._dump_path("angles")):
-            self.angles = np.load(self._dump_path("angles"))
-            logging.debug(f"Loaded {self._dump_path('angles')}\n")
-        else:
-            with timing("Compute Angles"):
-                self.angles = self.estimate_threads_orientation()
-            self.dump("angles", self.angles)
+    @staticmethod
+    def frames_thread_orientation(params):
+        video_path, start_frame, end_frame, angle_precision, hough_threshold, apply_abs = params
+        angles = []
+        cap = cv2.VideoCapture(video_path)  # it is necessary to instantiate video capture for each thread separately
+        cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
+        for frame_no in tqdm(range(start_frame, end_frame), total=end_frame-start_frame, desc=f"Frames from {start_frame} to {end_frame}"):
+            success, full_frame = cap.read()
+            if not success:
+                cap.release()
+                break
+            frame = full_frame[Y1:Y2, X1:X2]
 
-        if os.path.isfile(self._dump_path("breakpoints")) and os.path.isfile(self._dump_path("borderBreakpoints")):
-            self.borderBreakpoints = np.load(self._dump_path("borderBreakpoints"))
-            logging.debug(f"Loaded {self._dump_path('borderBreakpoints')}\n"
-                          f"{self.borderBreakpoints}\n")
-            self.breakpoints = np.load(self._dump_path("breakpoints"))
-            logging.debug(f"Loaded {self._dump_path('breakpoints')}\n"
-                          f"{self.breakpoints}\n")
-        else:
-            with timing("Compute Breakpoints"):
-                self.breakpoints = self.compute_breakpoint_candidates(self.angles)
-            self.dump("breakpoints", self.breakpoints)
-            with timing("Compute Border Breakpoints"):
-                border_breakpoints = self.filter_breakpoint_candidates(self.breakpoints, PREPROCESSOR_SAMPLING)
-            with timing("Compute Border Breakpoints"):
-                self.borderBreakpoints = self.refine_breakpoints(border_breakpoints, step=PREPROCESSOR_SAMPLING)
-            self.dump("borderBreakpoints", self.borderBreakpoints)
+            frame = cv2.resize(frame, (
+                frame.shape[1] // PREPROCESSOR_DOWNSCALE,
+                frame.shape[0] // PREPROCESSOR_DOWNSCALE))
+            frame = cv2.GaussianBlur(frame, (5, 5), 1)
 
-        if VERBOSE:
-            self.plot_angles(self.angles, breakpoints=self.borderBreakpoints, breakpoint_candidates=self.breakpoints,
-                             step=PREPROCESSOR_SAMPLING)
+            # Edge detection
+            edges = cv2.Canny(frame, 70, 180)
+
+            # Hough Transform
+            lines = cv2.HoughLinesP(edges, 1, np.pi / angle_precision, hough_threshold,
+                                    minLineLength=frame.shape[0] / 2.5,
+                                    maxLineGap=frame.shape[0] / 3)
+            if lines is None:
+                angles.append((frame_no, None))
+
+            # Extract angles and compute dominant
+            raw_angles = []
+
+            for line in lines:
+                x1, y1, x2, y2 = line[0]
+                angle_rad = np.arctan2(y2 - y1, x2 - x1)
+                raw_angles.append(np.rad2deg(angle_rad))
+
+            angle_median = np.median(raw_angles)
+            if apply_abs:
+                angle_median = np.abs(angle_median)
+            angles.append((frame_no, angle_median))
+        return angles
 
     def estimate_threads_orientation(self, start=0, end=None, step=PREPROCESSOR_SAMPLING, angle_precision=90, hough_treshold=80,
                                      apply_abs=True):
@@ -185,59 +286,24 @@ class VideoPreprocessor:
         using OpenCV Canny + HoughLinesP.
 
         Returns:
-            np.ndarray: Estimated thread's orientation for each frame.
+            np.ndarray: Estimated thread's orientation for each frame in degrees.
         """
-        computed_angles = []
         if end is None:
             end = self.num_frames
 
-        if LOAD_VIDEO_TO_RAM:
-            getFrame = self.getFrameFromRAM
-        else:
-            getFrame = self.getFrameFromVidCap
+        cpus = multiprocessing.cpu_count() - 1
+        with multiprocessing.Pool(cpus) as pool:
+            results = list(tqdm(pool.imap(self.frames_thread_orientation,
+                                          [(self.video_path, frame_no, frame_no + (end-start) // cpus, angle_precision, hough_treshold // PREPROCESSOR_DOWNSCALE, apply_abs)
+                                           for frame_no in range(start, end, (end-start) // cpus)]),
+                                total=cpus, #(end-start)/step,
+                                desc=f"Computing angles from {start} to {end} with step {step}")
+                           )
 
-        for i in tqdm(range(start, end, step), desc=f"Computing angles from {start} to {end} with step {step}"):
-            try:
-                frame = getFrame(i)
-
-                # Crop and downscale
-                frame = frame[Y1:Y2, X1:X2]
-
-                frame = cv2.resize(frame, (
-                    frame.shape[1] // PREPROCESSOR_DOWNSCALE,
-                    frame.shape[0] // PREPROCESSOR_DOWNSCALE))
-                frame = cv2.GaussianBlur(frame, (5, 5), 1)
-
-                # Edge detection
-                edges = cv2.Canny(frame, 70, 180)
-
-                # Hough Transform
-                lines = cv2.HoughLinesP(edges, 1, np.pi / angle_precision, hough_treshold,
-                                        minLineLength=frame.shape[0] / 2.5, maxLineGap=frame.shape[0] / 3)
-                if lines is None:
-                    logging.debug(f"No lines detected in frame {i}")
-                    computed_angles.append(45)
-                    continue
-
-                # Extract angles and compute dominant
-                angles = []
-                for line in lines:
-                    x1, y1, x2, y2 = line[0]
-                    angle_rad = np.arctan2(y2 - y1, x2 - x1)
-                    angles.append(np.rad2deg(angle_rad))
-
-                angle_median = np.median(angles)
-                if apply_abs:
-                    angle_median = np.abs(angle_median)
-                computed_angles.append(angle_median)
-            except Exception as e:
-                logging.error(f"Wrong number of frames by FFMpeg: {e}")
-                logging.info("Updating number of frames to the correct value...")
-                self.num_frames = i
-                break
+        computed_angles = np.array(sorted([(frame_no, angle) for records in results for frame_no, angle in records], key=lambda x: x[0]))
 
         logging.debug(f"Angles calculated from {start} to {end} with step {step}\n")
-        return np.array(computed_angles)
+        return computed_angles
 
     def compute_breakpoint_candidates(
             self, orientations=None, filter_length=-1, step=PREPROCESSOR_SAMPLING, threshold=SEGMENT_TYPE_TH,
@@ -259,7 +325,7 @@ class VideoPreprocessor:
             np.ndarray: Array of breakpoints.
         """
         if orientations is None:
-            orientations = self.angles
+            orientations = self.angles[:,1]
 
         polyorder = 1
 
@@ -290,9 +356,11 @@ class VideoPreprocessor:
                 plt.savefig(os.path.join(OUTPUT_FOLDER, "sg_filter.png"))
 
             orientations = angles_filtered
+        else:
+            orientations = orientations
 
         derivative = np.diff(orientations)
-        threshold = threshold * step
+        threshold = threshold
 
         segment_type = np.zeros_like(derivative)
         segment_type[derivative > threshold] = 1  # Increasing
@@ -300,13 +368,11 @@ class VideoPreprocessor:
 
         breakpoint_candidates = np.where(np.diff(segment_type) != 0)[0] + 1
 
-        breakpoint_candidates = breakpoint_candidates * step
-
         if len(breakpoint_candidates) > 1:
-            breakpoint_candidates = self.merge_breakpoint_candidates(breakpoint_candidates, step, threshold=merge_threshold, secondary=secondary,
+            breakpoint_candidates = self.merge_breakpoint_candidates(breakpoint_candidates, 1, threshold=merge_threshold, secondary=secondary,
                                                                      segment_type=segment_type)
 
-        breakpoint_candidates = np.concatenate([[0], breakpoint_candidates, [(len(orientations) - 1) * step]])
+        breakpoint_candidates = np.concatenate([[0], breakpoint_candidates, [(len(orientations) - 1)]])
 
         logging.debug(f"Calculated: Breakpoint Candidates\n"
                       f"{breakpoint_candidates}\n")
@@ -438,9 +504,9 @@ class VideoPreprocessor:
         Returns:
            int: Refined breakpoint index.
         """
-        angles = self.estimate_threads_orientation(bp - PREPROCESSOR_SAMPLING, bp + PREPROCESSOR_SAMPLING, 1, 1800, 200)
-        breakpoints, segment_type = self.compute_breakpoint_candidates(angles, step=1, merge_threshold=1,
-                                                                       segment_type_return=True, filter_length=5)
+        angles = self.angles[np.max([0, bp - PREPROCESSOR_SAMPLING]): bp + PREPROCESSOR_SAMPLING + 1, 1]
+        breakpoints, segment_type = self.compute_breakpoint_candidates(
+            angles, step=1, merge_threshold=1, segment_type_return=True, filter_length=5)
         if len(breakpoints) == 3:
             refined_bp = breakpoints[1]
         elif len(breakpoints) > 3:
@@ -481,84 +547,144 @@ class VideoPreprocessor:
         else:
             raise Exception("Too many border breakpoints calculated in refinement")
 
-    def preprocess_video(self):
+    @staticmethod
+    def rotation_compensation(params):
         """
-        Applies preprocessing to the video, including cropping, rotating frames and saving the processed output.
+        Rotates frames of a video incrementally by applying compensation for spherical distortion
+        (if specified) and saves the processed frames to an output video file. The rotation angle
+        per frame is controlled by a specified parameter, allowing a smooth transition from one
+        angle to another over the given frame range.
+
+        Parameters:
+            video_in_path (str): Path to the input video file.
+            video_out_path (str): Path to the output video file.
+            start (int): The starting frame index of the range to process.
+            end (int): The ending frame index of the range to process.
+            angle_per_frame_deg (float): The incremental angle to rotate each frame, in degrees.
+            angle_offset_deg (float): The initial angle offset applied to the first frame, in degrees.
         """
+        video_in_path, video_out_path, start, end, angle_per_frame_deg, angle_offset_deg = params
 
-        i_row = 0
-        if len(self.borderBreakpoints) >= 2:
-            start, end = self.borderBreakpoints[i_row]
-        else:
-            start, end = 0, 999999
+        cap_in = cv2.VideoCapture(video_in_path)
+        video_out = cv2.VideoWriter(
+            video_out_path,
+            apiPreference=cv2.CAP_FFMPEG,
+            fourcc=cv2.VideoWriter_fourcc(*CODEC),
+            fps=cap_in.get(cv2.CAP_PROP_FPS),
+            frameSize=(X2 - X1, Y2 - Y1),
+            params=[
+                cv2.VIDEOWRITER_PROP_DEPTH,
+                cv2.CV_8U,
+                cv2.VIDEOWRITER_PROP_IS_COLOR,
+                0,
+            ])
+        if RECTIFY:
+            frame_size_cv2 = (int(cap_in.get(cv2.CAP_PROP_FRAME_WIDTH)), int(cap_in.get(cv2.CAP_PROP_FRAME_HEIGHT)))
+            _, mtx, newcameramtx, distortion, _, _ = _load_calibration_parameters(RECTIFICATION_PARAMS_FOLDER)
+            mapx, mapy = cv2.initUndistortRectifyMap(mtx, distortion, None, newcameramtx, frame_size_cv2, 5)
 
-        angle = float(self.estimate_threads_orientation(start, start + 1, 1, 1800, 200, False)[0]) + PITCH_ANGLE
+        cap_in.set(cv2.CAP_PROP_POS_FRAMES, start)
 
-        if LOAD_VIDEO_TO_RAM:
-            getFrame = self.getFrameFromRAM
-            setFrame = self.setFrameToRAM
-        else:
-            getFrame = self.getFrameFromVidCap
-            setFrame = self.setFrameToVidCap
-            self.video_capture = cv2.VideoCapture(self.video_path)
-            self.video_capture.set(cv2.CAP_PROP_POS_FRAMES, 0)
-            self.video_writer = cv2.VideoWriter(str(self.get_output_video_file_path()),
-                                                apiPreference=cv2.CAP_FFMPEG,
-                                                fourcc=cv2.VideoWriter_fourcc(*CODEC),
-                                                fps=self.video_capture.get(cv2.CAP_PROP_FPS),
-                                                frameSize=(X2 - X1, Y2 - Y1),
-                                                params=[
-                                                    cv2.VIDEOWRITER_PROP_DEPTH,
-                                                    cv2.CV_8U,
-                                                    cv2.VIDEOWRITER_PROP_IS_COLOR,
-                                                    0,
-                                                ]
-                                                )
+        angle = angle_offset_deg
+        if angle_per_frame_deg == 0:
+            rotate_matrix = cv2.getRotationMatrix2D(((Y2 - Y1) / 2 + PADDING, (X2 - X1) / 2 + PADDING), angle, 1)
 
-        time_read = 0
-        time_remap = 0
-        time_rotation = 0
-        time_write = 0
+        for i in tqdm(range(start, end), desc=f"Rotation compensation {start}-{end}", total=end - start):
+            success, frame = cap_in.read()
+            if not success:
+                logging.warning(f"Sequence {start} to {end} ends soonder {i}.")
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-        for i in tqdm(range(self.num_frames), desc="PreProcessing frames"):
-            start_time = time.time()
-            frame = getFrame(i)
-            time_read += time.time() - start_time
+            # compensate spherical distortion
             if RECTIFY:
-                start_time = time.time()
-                frame = cv2.remap(frame, self.mapx, self.mapy, cv2.INTER_LINEAR).astype(np.uint8)
-                time_remap += time.time() - start_time
-
+                frame = cv2.remap(frame, mapx, mapy, cv2.INTER_LINEAR).astype(np.uint8)
+            # crop valid frame
             frame = frame[Y1 - PADDING:Y2 + PADDING, X1 - PADDING:X2 + PADDING]
+            # compute rotation matrix
+            if angle_per_frame_deg != 0:
+                rotate_matrix = cv2.getRotationMatrix2D(((Y2 - Y1) / 2 + PADDING, (X2 - X1) / 2 + PADDING), angle, 1)
+                angle += angle_per_frame_deg
 
-            rotate_matrix = cv2.getRotationMatrix2D((frame.shape[1] / 2, frame.shape[0] / 2), angle, 1)
-
-            start_time = time.time()
             rotated_image = cv2.warpAffine(
                 src=frame,
                 M=rotate_matrix,
-                dsize=(frame.shape[1], frame.shape[0]),
+                dsize=(X2 - X1 + 2 * PADDING, Y2 - Y1 + 2 * PADDING),
                 flags=cv2.INTER_CUBIC
             )[PADDING:Y2 - Y1 + PADDING, PADDING:X2 - X1 + PADDING]
-            time_rotation += time.time() - start_time
 
-            start_time = time.time()
-            setFrame(rotated_image.astype(np.uint8), i)
-            time_write += time.time() - start_time
+            video_out.write(rotated_image.astype(np.uint8))
 
-            if i < start:
-                angle += self.rotation_per_frame
-            if i == end:
-                i_row += 1
-                if i_row < len(self.borderBreakpoints):
-                    start, end = self.borderBreakpoints[i_row]
-                else:
-                    logging.warning(f"Reached out of index {i_row}")
+        video_out.release()
+        cap_in.release()
+        return video_out_path
 
-        logging.debug(f"read() {time_read}\n")
-        logging.debug(f"remap() {time_remap}\n")
-        logging.debug(f"warpAffine() {time_rotation}\n")
-        logging.debug(f"write() {time_write}\n")
+    def parallel_rotation_compensation(self):
+        run_params = []
+        angle_offset_deg = float(self.angles[0, 1]) + PITCH_ANGLE
+
+        logging.info("Preparing parameters for parallel compensation of rotation")
+        # if there is missing beggning or end part of the video, this will add it to the list
+        all_breakpoints = np.unique([0] + np.concatenate(self.borderBreakpoints).tolist() + [self.num_frames])
+        breakpoint_id = 0
+        breakpoint_start, breakpoint_end = self.borderBreakpoints[breakpoint_id]
+        for sequence_start in all_breakpoints:                
+            if sequence_start < breakpoint_start:
+                # rotation phase
+                run_params.append((
+                    self.video_path,
+                    self._dump_path(f"compensated-{sequence_start:03d}", extension=EXT),
+                    sequence_start, breakpoint_start,
+                    self.rotation_per_frame,
+                    angle_offset_deg
+                ))
+                angle_offset_deg += self.rotation_per_frame * (breakpoint_start - sequence_start)
+            elif sequence_start == breakpoint_start:
+                # shift phase
+                run_params.append((
+                    self.video_path,
+                    self._dump_path(f"compensated-{breakpoint_start:03d}", extension=EXT),
+                    breakpoint_start, breakpoint_end,
+                    0,
+                    angle_offset_deg
+                ))
+                # go to next breakpoint definition
+                breakpoint_id += 1
+                if len(self.borderBreakpoints) > breakpoint_id:
+                    breakpoint_start, breakpoint_end = self.borderBreakpoints[breakpoint_id]
+                elif breakpoint_end != all_breakpoints[-1]:
+                    # last rotation
+                    run_params.append((
+                        self.video_path,
+                        self._dump_path(f"compensated-{sequence_start:03d}", extension=EXT),
+                        breakpoint_end, all_breakpoints[-1],
+                        self.rotation_per_frame,
+                        angle_offset_deg
+                    ))
+                    break
+
+        # each sequence is processed separately
+        cpus = multiprocessing.cpu_count() - 1
+        with multiprocessing.Pool(cpus) as pool:
+            video_parts_paths = list(tqdm(pool.imap(VideoPreprocessor.rotation_compensation, run_params)))
+
+        cv2.destroyAllWindows()
+
+        with open(self._dump_path("video_parts", extension="txt"), "wt") as ffmpeg_concat_instructions:
+            for part_path in sorted(video_parts_paths):
+                ffmpeg_concat_instructions.write(f"file '{part_path}'\n")
+
+        logging.info("Joining videos with compensated rotation...")
+        subprocess.Popen([
+            "ffmpeg",
+            "-f", "concat",
+            "-safe", "0",
+            "-i", self._dump_path("video_parts", "txt"),
+            "-c", "copy",
+            self.get_output_video_file_path()
+        ])
+
+    def preprocess_video(self):
+        self.parallel_rotation_compensation()
 
     def compute_rotation_per_frame(self, orientations, breakpoint_candidates, breakpoints):
         """
@@ -579,6 +705,8 @@ class VideoPreprocessor:
         for i in range(0, len(breakpoint_candidates) - 1):
             if not start == breakpoint_candidates[i]:
                 segment = stats.mode(self.segment_type[breakpoint_candidates[i]:breakpoint_candidates[i + 1]])[0]
+                if segment == 0:
+                    continue
                 offset = -(k * 180)
                 if segment == 1 and not start == breakpoint_candidates[i + 1]:
                     k += 1
@@ -654,9 +782,7 @@ class VideoPreprocessor:
             step (int, optional): Step size of thread's orientation estimation.
         """
         plt.figure(figsize=(15, 3))
-        x = range(len(orientations))
-        x = [i * step for i in x]
-        plt.plot(x, orientations)
+        plt.plot(orientations[:,0], orientations[:,1])
         if breakpoint_candidates is not None:
             for bp in breakpoint_candidates:
                 plt.axvline(bp, color="blue")
@@ -721,3 +847,11 @@ class VideoPreprocessor:
             obj: The object to save.
         """
         np.save(self._dump_path(name), obj)
+
+    def dump_csv(self, name: str, dataFrame):
+        dataFrame.to_csv(self._dump_path(name, extension="csv"), index=False)
+
+    def load_csv(self, name: str):
+        array2D = pd.read_csv(self._dump_path(name, extension="csv")).to_numpy()
+        return array2D.reshape(-1) if array2D.shape[-1] == 1 else array2D
+

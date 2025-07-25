@@ -1,19 +1,19 @@
 # Dynamic paths based on the project directory
-OUTPUT_FOLDER = "../output"
-INPUT_FOLDER = "../input"
+OUTPUT_FOLDER = "/Users/gimli/cvr/data/zavity/ETE 2025_07_01-sample/out"
+INPUT_FOLDER = "/Users/gimli/cvr/data/zavity/ETE 2025_07_01-sample/in"
 
 # CONFIGURABLE
 VERBOSE = True  # plotting and image saving for debugging purposes
 TESTING_MODE = True  # testing mode does not blend rows during stitching and draws rectangles on margin, so they are
 # visible, also print intermediate row images (pre_sin, rolled)
 N_CPUS = 80  # specifies number of cpus used during parallelization
-RECTIFY = True  # Rectification of len's distortion can be set as False to decrease computation time but slightly
+RECTIFY = False  # Rectification of len's distortion can be set as False to decrease computation time but slightly
 # decrease quality of resulting OIO.
-LOAD_VIDEO_TO_RAM = True  # If True, it greatly reduces computing time, but requires FFmpeg to be installed in your
+LOAD_VIDEO_TO_RAM = False  # If True, it greatly reduces computing time, but requires FFmpeg to be installed in your
 # environment and 35 GB of RAM per minute of the video.
 CODEC = 'mp4v'  # If LOAD_VIDEO_TO_RAM = True, this codec is used to encode video after preprocessing.
 # It's configurable based on the environment. Other options: 'avc1', 'MJPG', etc.
-EXT = '.mp4'  # If LOAD_VIDEO_TO_RAM = True, this extension is used to encode video after preprocessing.
+EXT = 'mp4'  # If LOAD_VIDEO_TO_RAM = True, this extension is used to encode video after preprocessing.
 # It's configurable based on the codec. Other options: '.avi', etc.
 
 # CONFIGURABLE PHYSICS OF THREADED INSERT
@@ -26,13 +26,13 @@ REMOVE_ROTATION = True  # controls rotation removal during preprocessing
 PREPROCESSOR_SAMPLING = 28  # optimized at min(2*(num_of_border_breakpoints+1)*sampling+total_frames/sampling) e.g.
 # min(2*14x+21529/x)
 # cropping window coordinates
-Y1 = 550  # Y1-PADDING cant be lower than 0
-Y2 = 1850  # Y2+PADDING cant be bigger than height of input video (e.g. 2160)
-X1 = 1350  # X1-PADDING cant be lower than 0
-X2 = 2650  # X2+PADDING cant be bigger than width of input video (e.g. 3840)
+Y1 = 744  # Y1-PADDING cant be lower than 0
+Y2 = 2344  # Y2+PADDING cant be bigger than height of input video (e.g. 2160)
+X1 = 1126  # X1-PADDING cant be lower than 0
+X2 = 3726  # X2+PADDING cant be bigger than width of input video (e.g. 3840)
 PADDING = 300  # extra padding used during rotation compensation
-PREPROCESSOR_DOWNSCALE = 4  # downscaling used during preprocessing
-SEGMENT_TYPE_TH = 0.04  # threshold used to find out a segment type
+PREPROCESSOR_DOWNSCALE = 10  # downscaling used during preprocessing
+SEGMENT_TYPE_TH = 0.09  # threshold used to find out a segment type
 ROT_PER_FRAME = 0.12735436683938242  # can be updated with recalculated rotation with --calc_rot_per_frame True
 RECTIFICATION_PARAMS_FOLDER = 'src/config'  # path of folder which includes 'checkerboard-calibration.json' file
 # including parameters needed for rectification, used only with RECTIFY = True

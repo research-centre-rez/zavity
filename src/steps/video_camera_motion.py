@@ -9,7 +9,8 @@ from tqdm.auto import tqdm
 
 from config.config import (N_CPUS, MOTION_SAMPLING, MOTION_DOWNSCALE, ROW_ROTATION_OVERLAP_RATIO, LOAD_VIDEO_TO_RAM,
                            OUTPUT_FOLDER, VERBOSE)
-
+import multiprocessing
+import itertools
 
 class VideoMotion:
     """
@@ -67,6 +68,8 @@ class VideoMotion:
             self.video_capture = cv2.VideoCapture(video_file_path)
             self.width = int(self.video_capture.get(cv2.CAP_PROP_FRAME_WIDTH) / MOTION_DOWNSCALE)
             self.height = int(self.video_capture.get(cv2.CAP_PROP_FRAME_HEIGHT) / MOTION_DOWNSCALE)
+            self.num_frames = int(self.video_capture.get(cv2.CAP_PROP_FRAME_COUNT))
+
         self.video_file_path = video_file_path
         self.video_name = os.path.basename(video_file_path)
 
@@ -103,10 +106,11 @@ class VideoMotion:
         else:
             self.compute()
 
-    def compute_motion(self):
-        """
-        Computes motion directions and positions for each frame in the video using Optical Flow.
-        """
+    @staticmethod
+    def compute_frames_motion(video_file_path, start, end):
+        if end - start <= 0:
+            return []
+
         feature_params = dict(maxCorners=100,
                               qualityLevel=0.1,
                               minDistance=7,
@@ -118,26 +122,26 @@ class VideoMotion:
 
         err_threshold = 9
 
-        if LOAD_VIDEO_TO_RAM:
-            getFrame = self.getFrameFromRAM
-            total_frames = len(self.frames)
-        else:
-            getFrame = self.getFrameFromVidCap
-            total_frames = int(self.video_capture.get(cv2.CAP_PROP_FRAME_COUNT))
+        vidcap = cv2.VideoCapture(video_file_path)
+        vidcap.set(cv2.CAP_PROP_POS_FRAMES, start)
+        success, prev_frame = vidcap.read()
+        if not success:
+            raise Exception(f"Interval of frames {start}:{end} is not in video.")
+        prev_frame = cv2.resize(prev_frame, (prev_frame.shape[1] // MOTION_DOWNSCALE, prev_frame.shape[0] // MOTION_DOWNSCALE))
+        motion_positions = [(0, 0.0, 0.0)]
+        motion_directions = []
 
-        prev_frame = getFrame(0)
-        prev_frame = cv2.resize(prev_frame,
-                                (prev_frame.shape[1] // MOTION_DOWNSCALE, prev_frame.shape[0] // MOTION_DOWNSCALE))
-        self.motion_positions.append((0, 0.0, 0.0))
+        for frame_no in tqdm(range(start, end), total=end-start-1, desc=f"Motion estimation for frame numbers: {start} to {end}"):
+            success, next_frame = vidcap.read()
+            if not success:
+                logging.warning(f"Frame read failed: {frame_no}")
+                break
+            next_frame = cv2.resize(next_frame, (next_frame.shape[1] // MOTION_DOWNSCALE, next_frame.shape[0] // MOTION_DOWNSCALE))
 
-        for i in tqdm(range(MOTION_SAMPLING, total_frames, MOTION_SAMPLING), desc=f"Processing motion from frames"):
-            frame = getFrame(i)
-
-            frame = cv2.resize(frame, (frame.shape[1] // MOTION_DOWNSCALE, frame.shape[0] // MOTION_DOWNSCALE))
-            corners = self.get_corners(prev_frame, **feature_params)
-
+            # Do some magic with prev_frame and next_frame
+            corners = VideoMotion.get_corners(prev_frame, **feature_params)
             if corners is not None:
-                p1, st, err = cv2.calcOpticalFlowPyrLK(prev_frame, frame, corners, None, **lk_params)
+                p1, st, err = cv2.calcOpticalFlowPyrLK(prev_frame, next_frame, corners, None, **lk_params)
 
                 st = (st == 1) & (err < err_threshold)
                 good_new = p1[st == 1]
@@ -145,37 +149,51 @@ class VideoMotion:
                 if good_new.shape[0] > 0:
                     movement_direction = np.median(good_new - good_old, axis=0)
                     max_pos = np.argmax(np.abs(movement_direction))
-                    self.motion_positions.append((i,
-                                                  self.motion_positions[-1][1] + movement_direction[0],
-                                                  self.motion_positions[-1][2] + movement_direction[1]))
+                    motion_positions.append((frame_no, motion_positions[-1][1] + movement_direction[0], motion_positions[-1][2] + movement_direction[1]))
 
                     if max_pos == 0:
                         if movement_direction[max_pos] > 0:
-                            self.motion_directions.append(1)
+                            motion_directions.append(1)
                         else:
-                            self.motion_directions.append(2)
+                            motion_directions.append(2)
                     else:
                         if movement_direction[max_pos] > 0:
-                            self.motion_directions.append(3)
+                            motion_directions.append(3)
                         else:
-                            self.motion_directions.append(4)
+                            motion_directions.append(4)
                 else:
-                    self.motion_positions.append((i,
-                                                  self.motion_positions[-1][1] + self.motion_positions[-1][1] -
-                                                  self.motion_positions[-2][1],
-                                                  self.motion_positions[-1][2] + self.motion_positions[-1][2] -
-                                                  self.motion_positions[-2][2]))
-                    self.motion_directions.append(0)
+                    motion_positions.append((frame_no,
+                                             motion_positions[-1][1] + motion_positions[-1][1] -
+                                             motion_positions[-2][1],
+                                             motion_positions[-1][2] + motion_positions[-1][2] -
+                                             motion_positions[-2][2]))
+                    motion_directions.append(0)
             else:
-                self.motion_positions.append((i,
-                                              self.motion_positions[-1][1] + self.motion_positions[-1][1] -
-                                              self.motion_positions[-2][1],
-                                              self.motion_positions[-1][2] + self.motion_positions[-1][2] -
-                                              self.motion_positions[-2][2]))
-                self.motion_directions.append(0)
+                motion_positions.append((frame_no,
+                                         motion_positions[-1][1] + motion_positions[-1][1] -
+                                         motion_positions[-2][1],
+                                         motion_positions[-1][2] + motion_positions[-1][2] -
+                                         motion_positions[-2][2]))
+                motion_directions.append(0)
 
-            # Now update the previous frame and previous points
-            prev_frame = frame
+            prev_frame = next_frame
+
+        vidcap.release()
+        return motion_positions, motion_directions
+
+    def compute_motion(self):
+        """
+        Computes motion directions and positions for each frame in the video using Optical Flow.
+        """
+        cpus = multiprocessing.cpu_count() - 1
+        with multiprocessing.Pool(cpus) as pool:
+            results = list(tqdm(pool.imap(VideoMotion.compute_frames_motion,
+                                          [(self.video_path, frame_no, frame_no + self.num_frames // cpus)
+                                           for frame_no in range(0, self.num_frames, self.num_frames // cpus)]),
+                                total=cpus,  # (end-start)/step,
+                                desc=f"Computing motion")
+                           )
+        self.motion_positions = sorted(itertools.chain.from_iterable([positions for positions, directions in results]), key=lambda x: x[0])
 
         if VERBOSE:
             self.plot_motion_trajectory()
@@ -247,7 +265,7 @@ class VideoMotion:
             samples = []
             for i in range(20, 101, 20):
                 frame = int(start + i)
-                if frame_shift + frame < self.num_frames:
+                try:
                     a = getFrame(frame)
                     b = getFrame(frame + frame_shift)
 
@@ -275,9 +293,8 @@ class VideoMotion:
                         samples.append(move[0])
                     else:
                         samples.append(-move[0])
-                else:
-                    logging.warning(f"Frame {frame + frame_shift} exceeds max frame size {self.num_frames}. "
-                                    f"Start: {start}. End: {end}. Frame shift: {frame_shift}")
+                except Exception as e:
+                    logging.warning(f"Failed to estimate optical flow on frames {frame} and {frame_shift}. {e}")
 
             results.append(np.median(samples))
 
