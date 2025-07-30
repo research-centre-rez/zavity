@@ -53,7 +53,6 @@ class ImageRowStitcher:
             motions (VideoMotion): Instance of VideoMotion for motion data.
             video_path (str): Path to the video file.
         """
-        cv2.setNumThreads(N_CPUS)
         self.motions = motions
         self.imageRows = rows
         self.rolledImageRows = []

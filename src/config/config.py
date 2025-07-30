@@ -16,6 +16,9 @@ CODEC = 'mp4v'  # If LOAD_VIDEO_TO_RAM = True, this codec is used to encode vide
 EXT = 'mp4'  # If LOAD_VIDEO_TO_RAM = True, this extension is used to encode video after preprocessing.
 # It's configurable based on the codec. Other options: '.avi', etc.
 
+# Depending on camera resolution and optics used
+OPTICS_RADIUS_PX = 1200
+
 # CONFIGURABLE PHYSICS OF THREADED INSERT
 PITCH_ANGLE = 3.43  # pitch angle of threaded insert in degrees
 
@@ -25,22 +28,18 @@ REMOVE_ROTATION = True  # controls rotation removal during preprocessing
 # it's there for historical reasons
 PREPROCESSOR_SAMPLING = 28  # optimized at min(2*(num_of_border_breakpoints+1)*sampling+total_frames/sampling) e.g.
 # min(2*14x+21529/x)
-# cropping window coordinates
-Y1 = 744  # Y1-PADDING cant be lower than 0
-Y2 = 2344  # Y2+PADDING cant be bigger than height of input video (e.g. 2160)
-X1 = 1126  # X1-PADDING cant be lower than 0
-X2 = 3726  # X2+PADDING cant be bigger than width of input video (e.g. 3840)
+
 PADDING = 300  # extra padding used during rotation compensation
 PREPROCESSOR_DOWNSCALE = 10  # downscaling used during preprocessing
-SEGMENT_TYPE_TH = 0.09  # threshold used to find out a segment type
+SEGMENT_TYPE_TH = 3  # threshold used to find out a segment type
 ROT_PER_FRAME = 0.12735436683938242  # can be updated with recalculated rotation with --calc_rot_per_frame True
 RECTIFICATION_PARAMS_FOLDER = 'src/config'  # path of folder which includes 'checkerboard-calibration.json' file
 # including parameters needed for rectification, used only with RECTIFY = True
 INTERVAL_FILTER_TH = 0.2  # threshold of a difference ratio in frame length to filter small intervals
 # VideoMotion config
 MOTION_SAMPLING = 1  # sampling used during motion detection
-MOTION_DOWNSCALE = 4  # downscaling used during motion detection
-ROW_ROTATION_OVERLAP_RATIO = 1.055  # Precalculated ratio of device's rotational movement, meaning it does full
+MOTION_DOWNSCALE = 1  # downscaling used during motion detection
+ROW_ROTATION_OVERLAP_RATIO = 1.032  # Precalculated ratio of device's rotational movement, meaning it does full
 # rotation and extra 5.5 % of circle
 # RowBuilder config
 BLENDED_PIXELS_PER_FRAME = 11  # number of columns taken from one frame to form row image

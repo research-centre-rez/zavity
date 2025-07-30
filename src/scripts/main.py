@@ -9,7 +9,7 @@ sys.path.append(src_dir)
 
 from timeit import default_timer as timer
 from contextlib import contextmanager
-from config.config import OUTPUT_FOLDER, INPUT_FOLDER
+from config.config import OUTPUT_FOLDER, INPUT_FOLDER, OPTICS_RADIUS_PX
 from steps.image_row_builder import ImageRowBuilder
 from steps.image_row_stitcher import ImageRowStitcher
 from steps.video_camera_motion import VideoMotion
@@ -69,20 +69,23 @@ def process_multiple_videos(folder_path, calc_rot_per_frame):
 
 def process_video(video_path, calc_rot_per_frame):
     with timing("Total OIO Pipeline"):
+        with timing("Crop estimation"):
+            from steps.adaptive_frame_cropping import AdaptiveFrameCropper
+            cropper = AdaptiveFrameCropper(video_path, OPTICS_RADIUS_PX)
+            frames_center = cropper.get_frames_center()
         # Pipeline stages
         with timing("Preprocessor"):
             from steps.video_preprocessor import VideoPreprocessor
-            preprocessor = VideoPreprocessor(video_path, calc_rot_per_frame)
+            preprocessor = VideoPreprocessor(video_path, frames_center)
             preprocessor.process_or_load()
             video_file_path = preprocessor.get_output_video_file_path()
-            frames = preprocessor.getProcessedFrames()
 
         with timing("VideoMotion"):
-            motions = VideoMotion(frames, video_file_path, preprocessor.get_intervals())
+            motions = VideoMotion(video_file_path, preprocessor.get_intervals())
             motions.process()
 
         with timing("RowBuilder"):
-            constructor = ImageRowBuilder(frames, motions, preprocessor.get_intervals(), video_file_path)
+            constructor = ImageRowBuilder(motions, preprocessor.get_intervals(), video_file_path)
             rows = constructor.construct_rows()
 
         with timing("RowStitcher"):

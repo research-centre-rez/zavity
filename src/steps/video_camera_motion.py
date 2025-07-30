@@ -36,7 +36,6 @@ class VideoMotion:
     motion_directions: list[int]
     motion_positions: list[tuple[int, float, float]]
     intervals: np.ndarray
-    video_capture: cv2.VideoCapture
     width: int
     height: int
     video_file_path: str
@@ -45,7 +44,7 @@ class VideoMotion:
     cw: bool
     frames: np.ndarray
 
-    def __init__(self, frames: np.ndarray, video_file_path: str, intervals: list):
+    def __init__(self, video_file_path: str, intervals: list):
         """
         Initializes the VideoMotion class.
 
@@ -60,15 +59,11 @@ class VideoMotion:
         self.motion_directions = []
         self.motion_positions = []
         self.intervals = np.array(intervals)
-        if LOAD_VIDEO_TO_RAM:
-            self.frames = frames
-            self.num_frames = len(frames)
-            self.width, self.height = frames.shape[2] / MOTION_DOWNSCALE, frames.shape[1] / MOTION_DOWNSCALE
-        else:
-            self.video_capture = cv2.VideoCapture(video_file_path)
-            self.width = int(self.video_capture.get(cv2.CAP_PROP_FRAME_WIDTH) / MOTION_DOWNSCALE)
-            self.height = int(self.video_capture.get(cv2.CAP_PROP_FRAME_HEIGHT) / MOTION_DOWNSCALE)
-            self.num_frames = int(self.video_capture.get(cv2.CAP_PROP_FRAME_COUNT))
+
+        video_capture = cv2.VideoCapture(video_file_path)
+        self.width = int(video_capture.get(cv2.CAP_PROP_FRAME_WIDTH) / MOTION_DOWNSCALE)
+        self.height = int(video_capture.get(cv2.CAP_PROP_FRAME_HEIGHT) / MOTION_DOWNSCALE)
+        self.num_frames = int(video_capture.get(cv2.CAP_PROP_FRAME_COUNT))
 
         self.video_file_path = video_file_path
         self.video_name = os.path.basename(video_file_path)
@@ -107,7 +102,49 @@ class VideoMotion:
             self.compute()
 
     @staticmethod
-    def compute_frames_motion(video_file_path, start, end):
+    def estimate_frames_motion(params):
+        video_file_path, start, end = params
+
+        feature_params = dict(maxCorners=200,
+                              qualityLevel=0.1,
+                              minDistance=7,
+                              blockSize=7)
+
+        lk_params = dict(winSize=(15, 15),
+                         maxLevel=2,
+                         criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 10, 0.03))
+
+        vidcap = cv2.VideoCapture(video_file_path)
+        vidcap.set(cv2.CAP_PROP_POS_FRAMES, start)
+        success, prev_frame = vidcap.read()
+        prev_frame = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY)
+        corners = VideoMotion.get_corners(prev_frame, **feature_params)
+        motion_positions = [(0, 0.0, 0.0)]
+
+        for frame_no in tqdm(np.arange(start + 1, end), total=end - start - 1, desc=f"Motion for frames {start}-{end}"):
+            success, next_frame = vidcap.read()
+            if not success:
+                break
+            next_frame = cv2.cvtColor(next_frame, cv2.COLOR_BGR2GRAY)
+            new_corners, status, err = cv2.calcOpticalFlowPyrLK(prev_frame, next_frame, corners, None, **lk_params)
+            good_old = corners[status == 1]
+            good_new = new_corners[status == 1]
+            movement_direction = np.median(good_new - good_old, axis=0)
+            motion_positions.append((frame_no, motion_positions[-1][1] + movement_direction[0],
+                                     motion_positions[-1][2] + movement_direction[1]))
+
+
+            corners = new_corners[status == 1]
+            if len(corners < 150):
+                prev_frame = next_frame
+                corners = VideoMotion.get_corners(prev_frame, **feature_params)
+
+        vidcap.release()
+        return motion_positions, None
+
+    @staticmethod
+    def compute_frames_motion(params):
+        video_file_path, start, end = params
         if end - start <= 0:
             return []
 
@@ -127,6 +164,7 @@ class VideoMotion:
         success, prev_frame = vidcap.read()
         if not success:
             raise Exception(f"Interval of frames {start}:{end} is not in video.")
+        prev_frame = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY).astype(np.uint8)
         prev_frame = cv2.resize(prev_frame, (prev_frame.shape[1] // MOTION_DOWNSCALE, prev_frame.shape[0] // MOTION_DOWNSCALE))
         motion_positions = [(0, 0.0, 0.0)]
         motion_directions = []
@@ -136,7 +174,7 @@ class VideoMotion:
             if not success:
                 logging.warning(f"Frame read failed: {frame_no}")
                 break
-            next_frame = cv2.resize(next_frame, (next_frame.shape[1] // MOTION_DOWNSCALE, next_frame.shape[0] // MOTION_DOWNSCALE))
+            next_frame = cv2.resize(cv2.cvtColor(next_frame, cv2.COLOR_BGR2GRAY), (next_frame.shape[1] // MOTION_DOWNSCALE, next_frame.shape[0] // MOTION_DOWNSCALE))
 
             # Do some magic with prev_frame and next_frame
             corners = VideoMotion.get_corners(prev_frame, **feature_params)
@@ -187,13 +225,27 @@ class VideoMotion:
         """
         cpus = multiprocessing.cpu_count() - 1
         with multiprocessing.Pool(cpus) as pool:
-            results = list(tqdm(pool.imap(VideoMotion.compute_frames_motion,
-                                          [(self.video_path, frame_no, frame_no + self.num_frames // cpus)
-                                           for frame_no in range(0, self.num_frames, self.num_frames // cpus)]),
+            results = list(tqdm(pool.imap(VideoMotion.estimate_frames_motion,
+                                          [(self.video_file_path, np.max([frame_no - 1, 0]), frame_no + self.num_frames // cpus)
+                                           for frame_no in np.arange(0, self.num_frames, self.num_frames // cpus)]),
                                 total=cpus,  # (end-start)/step,
                                 desc=f"Computing motion")
                            )
-        self.motion_positions = sorted(itertools.chain.from_iterable([positions for positions, directions in results]), key=lambda x: x[0])
+
+        # aggregate measured results
+        stack = []
+        dx = dy = 0  # each sequence is necessary to shift according to the previous sequence
+        for pos, dir in results:
+            pos_a = np.array(pos)
+            start, _, _ = pos[1]
+            end, x1, y1 = pos[-1]
+            if start == 0: # first sequence contains (0, 0, 0) for the other sequences it is redundant
+                stack.append(np.stack([pos_a[:, 0], pos_a[:, 1], pos_a[:, 2]], axis=1))
+            else:
+                stack.append(np.stack([pos_a[1:, 0], pos_a[1:, 1] + dx, pos_a[1:, 2] + dy], axis=1))
+            dx += x1
+            dy += y1
+        self.motion_positions = np.concatenate(stack)
 
         if VERBOSE:
             self.plot_motion_trajectory()
@@ -254,56 +306,60 @@ class VideoMotion:
         """
         results = []
 
-        if LOAD_VIDEO_TO_RAM:
-            getFrame = self.getFrameFromRAM
-        else:
-            getFrame = self.getFrameFromVidCap
+        frame_shift_estimate = int(np.ceil(np.median(self.intervals[:, 1] - self.intervals[:, 0]) / ROW_ROTATION_OVERLAP_RATIO))
 
-        frame_shift = int(np.ceil(np.mean(self.intervals[:, 1] - self.intervals[:, 0]) / ROW_ROTATION_OVERLAP_RATIO))
+        feature_params = dict(maxCorners=50,
+                              qualityLevel=0.1,
+                              minDistance=50,
+                              blockSize=7)
 
-        for start, end in self.intervals:
+        lk_params = dict(winSize=(50, 50),
+                         maxLevel=3,
+                         criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.1))
+
+        err_threshold = 9
+
+        vidcap = cv2.VideoCapture(self.video_file_path)
+        for start, end in tqdm(self.intervals, total=len(self.intervals), desc="Counting row lengths"):
             samples = []
-            for i in range(20, 101, 20):
-                frame = int(start + i)
-                try:
-                    a = getFrame(frame)
-                    b = getFrame(frame + frame_shift)
 
-                    feature_params = dict(maxCorners=50,
-                                          qualityLevel=0.1,
-                                          minDistance=50,
-                                          blockSize=7)
+            # Reference frame for matching points:
+            for i in range(-40, 41, 20):
+                ref_frame = (end - start - frame_shift_estimate) // 2 + start + i
+                vidcap.set(cv2.CAP_PROP_POS_FRAMES, ref_frame)
+                success, a = vidcap.read()
+                a = cv2.cvtColor(a, cv2.COLOR_BGR2GRAY)
+                corners = cv2.goodFeaturesToTrack(a, **feature_params)
 
-                    lk_params = dict(winSize=(50, 50),
-                                     maxLevel=3,
-                                     criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.1))
-
-                    err_threshold = 9
-
-                    corners = cv2.goodFeaturesToTrack(a, **feature_params)
-
+                # in the for loop try several frames to match founded corners
+                ROT360_SEARCH_RANGE = 100
+                vidcap.set(cv2.CAP_PROP_POS_FRAMES, ref_frame + frame_shift_estimate - ROT360_SEARCH_RANGE)
+                matches = []
+                for frame_shift_delta in range(-ROT360_SEARCH_RANGE, ROT360_SEARCH_RANGE):
+                    success, b = vidcap.read()
+                    if not success:
+                        continue
+                    b = cv2.cvtColor(b, cv2.COLOR_BGR2GRAY)
                     p1, st, err = cv2.calcOpticalFlowPyrLK(a, b, corners, None, **lk_params)
-
                     p1 = p1[st == 1]
                     p0 = corners[st == 1]
 
+                    match_quality = np.sum(err[st == 1])
                     move = np.median(p1 - p0, axis=0)
+                    matches.append((match_quality, move[0], frame_shift_estimate + frame_shift_delta))
 
-                    if self.get_direction() == 'CW':
-                        samples.append(move[0])
-                    else:
-                        samples.append(-move[0])
-                except Exception as e:
-                    logging.warning(f"Failed to estimate optical flow on frames {frame} and {frame_shift}. {e}")
+                best_match_id = np.argmin(np.array(matches)[:, 0])
+                if self.get_direction() == 'CW':
+                    samples.append((np.min(np.array(matches)[:, 0]), matches[best_match_id][1:], matches[best_match_id][2]))
+                else:
+                    samples.append((np.min(np.array(matches)[:, 0]), -matches[best_match_id][1], matches[best_match_id][2]))
 
-            results.append(np.median(samples))
+            results.append(np.median([frames_count for _, _, frames_count in samples]))
 
-        result = np.mean(results)
-        self.frames_per_360 = np.ceil(frame_shift + result / abs(self.speeds['horizontal'])).astype(int)
+        self.frames_per_360 = np.median(results)
         std_over_rows = np.std(results) / abs(self.speeds['horizontal'])
         logging.debug(
-            f"Frames per 360: {frame_shift + result / abs(self.speeds['horizontal'])}±{std_over_rows} calculated from "
-            f"frame_shift: {frame_shift}")
+            f"Frames per 360: {self.frames_per_360}±{std_over_rows} calculated from frame_shift: {frame_shift_estimate}")
 
     @staticmethod
     def get_corners(gray_frame, **feature_params):
