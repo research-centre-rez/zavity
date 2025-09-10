@@ -4,22 +4,21 @@ import pickle
 import cv2
 import numpy as np
 import pandas as pd
-from scipy.stats import stats
 from tqdm.auto import tqdm
 
-from config.config import (N_CPUS, MOTION_SAMPLING, MOTION_DOWNSCALE, ROW_ROTATION_OVERLAP_RATIO, LOAD_VIDEO_TO_RAM,
-                           OUTPUT_FOLDER, VERBOSE)
+from config.config import (MOTION_DOWNSCALE, ROW_ROTATION_OVERLAP_RATIO, OUTPUT_FOLDER, VERBOSE)
 import multiprocessing
-import itertools
+
 
 class VideoMotion:
     """
-    Handles motion detection and speed calculation.
+    Handles motion detection and speed calculation. This means:
+    - estimating shift of each pair of consecutive frames
+    - postprocessing of raw values
 
     Attributes:
         speeds (dict[str, float]): Dictionary containing horizontal and vertical speeds.
         stats (dict): Statistical data for speed calculations.
-        motion_directions (list[int]): List of motion directions for frames.
         motion_positions (list[tuple[int, float, float]]): Position data for each frame.
         intervals (np.ndarray): Intervals of motion detected in the video.
         video_capture (cv2.VideoCapture): OpenCV video capture object.
@@ -33,7 +32,6 @@ class VideoMotion:
     """
     speeds: dict[str, float]
     stats: dict
-    motion_directions: list[int]
     motion_positions: list[tuple[int, float, float]]
     intervals: np.ndarray
     width: int
@@ -53,7 +51,6 @@ class VideoMotion:
             video_file_path (str): Path to the input video file.
             intervals (list): List of intervals with vertical computed during video preprocessing.
         """
-        cv2.setNumThreads(N_CPUS)
         self.speeds = {}
         self.stats = {}
         self.motion_directions = []
@@ -64,26 +61,26 @@ class VideoMotion:
         self.width = int(video_capture.get(cv2.CAP_PROP_FRAME_WIDTH) / MOTION_DOWNSCALE)
         self.height = int(video_capture.get(cv2.CAP_PROP_FRAME_HEIGHT) / MOTION_DOWNSCALE)
         self.num_frames = int(video_capture.get(cv2.CAP_PROP_FRAME_COUNT))
+        video_capture.release()
 
         self.video_file_path = video_file_path
         self.video_name = os.path.basename(video_file_path)
 
     def process(self):
         """
-        Processes motion analysis for the video.
+        Processes video motion data by estimating (storing)/loading motion-related attributes.
+        Checks for precomputed motion attributes and attempts to load them if available. If not, it calculates
+        and persists the attributes for subsequent use. Also handles loading and logging of motion statistics.
+
+        Raises:
+            Any exceptions related to file operations, computations, or data processing.
         """
         logging.info(f"Processing VideoMotion for: {self.video_file_path}\n")
-        self.load_or_compute()
-
-    def load_or_compute(self):
-        """
-        Loads or computes motion data, speeds, and intervals.
-        """
         if os.path.isfile(self._dump_path("motion_directions")) and os.path.isfile(self._dump_path("motion_positions")):
             self.motion_directions = np.load(self._dump_path("motion_directions"))
             self.motion_positions = np.load(self._dump_path("motion_positions"))
         else:
-            self.compute_motion()
+            self.parallel_motion_est()
             self.dump("motion_directions", self.motion_directions)
             self.dump("motion_positions", self.motion_positions)
         if os.path.isfile(self._dump_path("speeds")) and os.path.isfile(
@@ -99,10 +96,28 @@ class VideoMotion:
             self.frames_per_360 = np.load(self._dump_path("frames_per_360"))
             logging.debug(f"Frames per 360: {self.frames_per_360} Loaded")
         else:
-            self.compute()
+            self._compute()
 
     @staticmethod
-    def estimate_frames_motion(params):
+    def sequential_motion_est(params):
+        """
+        Estimates the motion between frames in a specified range of a video file using feature tracking.
+
+        This function calculates the motion of features in consecutive frames using the Lucas-Kanade optical flow
+        method. It tracks features in the given video file, starting from a specific frame and ending at another.
+        The motion is represented as a series of positions for each frame processed.
+
+        Arguments:
+            params (tuple): A tuple containing:
+                video_file_path (str): Path to the video file.
+                start (int): Starting frame number of the range.
+                end (int): Ending frame number of the range.
+
+        Returns:
+            tuple: A tuple containing:
+                - motion_positions (list of tuple): A list where each entry is a tuple consisting of the frame number,
+                  cumulative horizontal position, and cumulative vertical position.
+        """
         video_file_path, start, end = params
 
         feature_params = dict(maxCorners=200,
@@ -115,10 +130,11 @@ class VideoMotion:
                          criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 10, 0.03))
 
         vidcap = cv2.VideoCapture(video_file_path)
-        vidcap.set(cv2.CAP_PROP_POS_FRAMES, start)
+        vidcap.set(cv2.CAP_PROP_POS_FRAMES, start)  # This operation is time consuming and must be done rarely
         success, prev_frame = vidcap.read()
         prev_frame = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY)
-        corners = VideoMotion.get_corners(prev_frame, **feature_params)
+        corners = cv2.goodFeaturesToTrack(prev_frame, **feature_params)
+
         motion_positions = [(0, 0.0, 0.0)]
 
         for frame_no in tqdm(np.arange(start + 1, end), total=end - start - 1, desc=f"Motion for frames {start}-{end}"):
@@ -137,95 +153,30 @@ class VideoMotion:
             corners = new_corners[status == 1]
             if len(corners < 150):
                 prev_frame = next_frame
-                corners = VideoMotion.get_corners(prev_frame, **feature_params)
+                corners = cv2.goodFeaturesToTrack(prev_frame, **feature_params)
 
         vidcap.release()
-        return motion_positions, None
+        return motion_positions
 
-    @staticmethod
-    def compute_frames_motion(params):
-        video_file_path, start, end = params
-        if end - start <= 0:
-            return []
-
-        feature_params = dict(maxCorners=100,
-                              qualityLevel=0.1,
-                              minDistance=7,
-                              blockSize=7)
-
-        lk_params = dict(winSize=(15, 15),
-                         maxLevel=2,
-                         criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 10, 0.03))
-
-        err_threshold = 9
-
-        vidcap = cv2.VideoCapture(video_file_path)
-        vidcap.set(cv2.CAP_PROP_POS_FRAMES, start)
-        success, prev_frame = vidcap.read()
-        if not success:
-            raise Exception(f"Interval of frames {start}:{end} is not in video.")
-        prev_frame = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY).astype(np.uint8)
-        prev_frame = cv2.resize(prev_frame, (prev_frame.shape[1] // MOTION_DOWNSCALE, prev_frame.shape[0] // MOTION_DOWNSCALE))
-        motion_positions = [(0, 0.0, 0.0)]
-        motion_directions = []
-
-        for frame_no in tqdm(range(start, end), total=end-start-1, desc=f"Motion estimation for frame numbers: {start} to {end}"):
-            success, next_frame = vidcap.read()
-            if not success:
-                logging.warning(f"Frame read failed: {frame_no}")
-                break
-            next_frame = cv2.resize(cv2.cvtColor(next_frame, cv2.COLOR_BGR2GRAY), (next_frame.shape[1] // MOTION_DOWNSCALE, next_frame.shape[0] // MOTION_DOWNSCALE))
-
-            # Do some magic with prev_frame and next_frame
-            corners = VideoMotion.get_corners(prev_frame, **feature_params)
-            if corners is not None:
-                p1, st, err = cv2.calcOpticalFlowPyrLK(prev_frame, next_frame, corners, None, **lk_params)
-
-                st = (st == 1) & (err < err_threshold)
-                good_new = p1[st == 1]
-                good_old = corners[st == 1]
-                if good_new.shape[0] > 0:
-                    movement_direction = np.median(good_new - good_old, axis=0)
-                    max_pos = np.argmax(np.abs(movement_direction))
-                    motion_positions.append((frame_no, motion_positions[-1][1] + movement_direction[0], motion_positions[-1][2] + movement_direction[1]))
-
-                    if max_pos == 0:
-                        if movement_direction[max_pos] > 0:
-                            motion_directions.append(1)
-                        else:
-                            motion_directions.append(2)
-                    else:
-                        if movement_direction[max_pos] > 0:
-                            motion_directions.append(3)
-                        else:
-                            motion_directions.append(4)
-                else:
-                    motion_positions.append((frame_no,
-                                             motion_positions[-1][1] + motion_positions[-1][1] -
-                                             motion_positions[-2][1],
-                                             motion_positions[-1][2] + motion_positions[-1][2] -
-                                             motion_positions[-2][2]))
-                    motion_directions.append(0)
-            else:
-                motion_positions.append((frame_no,
-                                         motion_positions[-1][1] + motion_positions[-1][1] -
-                                         motion_positions[-2][1],
-                                         motion_positions[-1][2] + motion_positions[-1][2] -
-                                         motion_positions[-2][2]))
-                motion_directions.append(0)
-
-            prev_frame = next_frame
-
-        vidcap.release()
-        return motion_positions, motion_directions
-
-    def compute_motion(self):
+    def parallel_motion_est(self):
         """
-        Computes motion directions and positions for each frame in the video using Optical Flow.
+        Compute and aggregate motion trajectories for video frames using multiprocessing framework.
+
+        This function employs a multiprocessing pool to compute motion estimates for distinct
+        video frame sequences. Each sequence's result is aggregated to construct the overall
+        motion trajectory while maintaining continuity across sequences. The method ensures
+        efficient parallel computation, accommodating systems with multiple CPU cores.
+
+        Attributes
+        ----------
+        motion_positions: numpy.ndarray
+            Aggregated array representing the motion trajectory of the video frames, aligned
+            and merged across different computed sequences.
+
         """
         cpus = multiprocessing.cpu_count() - 1
         with multiprocessing.Pool(cpus) as pool:
-            results = list(tqdm(pool.imap(VideoMotion.estimate_frames_motion,
+            results = list(tqdm(pool.imap(VideoMotion.sequential_motion_est,
                                           [(self.video_file_path, np.max([frame_no - 1, 0]), frame_no + self.num_frames // cpus)
                                            for frame_no in np.arange(0, self.num_frames, self.num_frames // cpus)]),
                                 total=cpus,  # (end-start)/step,
@@ -235,11 +186,11 @@ class VideoMotion:
         # aggregate measured results
         stack = []
         dx = dy = 0  # each sequence is necessary to shift according to the previous sequence
-        for pos, dir in results:
+        for pos in results:
             pos_a = np.array(pos)
             start, _, _ = pos[1]
             end, x1, y1 = pos[-1]
-            if start == 0: # first sequence contains (0, 0, 0) for the other sequences it is redundant
+            if start == 0:  #first sequence contains (0, 0, 0) for the other sequences it is redundant
                 stack.append(np.stack([pos_a[:, 0], pos_a[:, 1], pos_a[:, 2]], axis=1))
             else:
                 stack.append(np.stack([pos_a[1:, 0], pos_a[1:, 1] + dx, pos_a[1:, 2] + dy], axis=1))
@@ -250,9 +201,15 @@ class VideoMotion:
         if VERBOSE:
             self.plot_motion_trajectory()
 
-    def compute(self):
+
+    def _compute(self):
         """
-        Computes speeds, intervals, and frames per 360-degree rotation.
+        Performs computational operations involving speeds, intervals, frames, and statistical
+        data. The method orchestrates the computation and stores data in various formats
+        for later use.
+
+        Raises:
+            Exception: If there are issues in dumping or file operations.
         """
         self.compute_speeds()
         self.compute_frames_per360()
@@ -280,12 +237,6 @@ class VideoMotion:
         df_horizontal = df[mask_horizontal]
         self.speeds["horizontal"] = df_horizontal["x_shift_diff"].mean() * MOTION_DOWNSCALE
         self.stats["horizontal_speed_std"] = df_horizontal["x_shift_diff"].std() * MOTION_DOWNSCALE
-
-        # mask_vertical = pd.Series(False, index=df.index)
-        # for start, end in self.getInvertedIntervals():
-        #     mask_vertical |= (df['frame_ID'] >= start+5) & (df['frame_ID'] <= end-5)
-        # df_vertical = df[mask_vertical]
-        # self.speeds["vertical"] = df_vertical["y_shift_diff"].mean() * self.resolution_decs
 
         vertical_shifts = []
         for start, end in self.get_inverted_intervals():
@@ -316,8 +267,6 @@ class VideoMotion:
         lk_params = dict(winSize=(50, 50),
                          maxLevel=3,
                          criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.1))
-
-        err_threshold = 9
 
         vidcap = cv2.VideoCapture(self.video_file_path)
         for start, end in tqdm(self.intervals, total=len(self.intervals), desc="Counting row lengths"):
@@ -361,21 +310,6 @@ class VideoMotion:
         logging.debug(
             f"Frames per 360: {self.frames_per_360}±{std_over_rows} calculated from frame_shift: {frame_shift_estimate}")
 
-    @staticmethod
-    def get_corners(gray_frame, **feature_params):
-        """
-        Detects corners in a grayscale frame using OpenCV's goodFeaturesToTrack.
-
-        Args:
-            gray_frame (np.ndarray): Grayscale image for corner detection.
-            **feature_params: Additional parameters for corner detection.
-
-        Returns:
-            np.ndarray: Detected corner points.
-        """
-        corners = cv2.goodFeaturesToTrack(gray_frame, **feature_params)
-        return corners
-
     def _dump_path(self, obj_name):
         """
         Generates a file path for saving or loading objects.
@@ -397,32 +331,6 @@ class VideoMotion:
             obj: Object to save.
         """
         np.save(self._dump_path(name), obj)
-
-    @staticmethod
-    def get_common_direction(motion_direction):
-        """
-        Finds the most frequent motion direction.
-
-        Args:
-            motion_direction (list[int]): List of motion directions.
-
-        Returns:
-            int: Most common motion direction.
-        """
-        return stats.mode(motion_direction)
-
-    def getFrameFromRAM(self, i):
-        return self.frames[i]
-
-    def getFrameFromVidCap(self, i):
-        self.video_capture.set(cv2.CAP_PROP_POS_FRAMES, i)
-        success, frame = self.video_capture.read()
-
-        if not success or frame is None:
-            logging.critical(f"Failed to read frame {i}")
-            raise IOError(f"Failed to read frame {i}")
-
-        return cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
     def plot_motion_trajectory(self, start=0, end=4000):
         """

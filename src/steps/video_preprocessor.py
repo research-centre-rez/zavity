@@ -9,10 +9,8 @@ from scipy.signal import find_peaks
 from tqdm.auto import tqdm
 import multiprocessing
 
-from config.config import (N_CPUS, PREPROCESSOR_SAMPLING, ROT_PER_FRAME, PADDING, OUTPUT_FOLDER,
-                           RECTIFICATION_PARAMS_FOLDER, RECTIFY, INTERVAL_FILTER_TH, PREPROCESSOR_DOWNSCALE,
-                           SEGMENT_TYPE_TH, REMOVE_ROTATION, LOAD_VIDEO_TO_RAM, CODEC, EXT, PITCH_ANGLE,
-                           VERBOSE)
+from config.config import (PREPROCESSOR_SAMPLING, OUTPUT_FOLDER, RECTIFICATION_PARAMS_FOLDER, RECTIFY,
+                           PREPROCESSOR_DOWNSCALE, SEGMENT_TYPE_TH, REMOVE_ROTATION, CODEC, EXT, VERBOSE)
 from scripts.main import timing
 from steps.adaptive_frame_cropping import AdaptiveFrameCropper, CROPPED_FRAME_SIDE_PX
 from steps.video_rectifier import _load_calibration_parameters
@@ -21,34 +19,33 @@ import pandas as pd
 
 class VideoPreprocessor:
     """
-    A class for preprocessing videos by analysing frames, computing threads orientation per frame, and
-    applying rotation corrections. Outputs a processed video and related computed data.
+    A class for preprocessing videos by analysing frames:
+    - estimating center of the scene
+    - computing threads orientation in the scene
+    - finding frame numbers where is a change in engine mode (shift vs. rotation)
+    - splitting the video accordingly
+    - applying rotation corrections
+
+    Outputs a processed video and computed centers/orientations.
 
     Attributes:
         video_name (str): Name of the input video file.
         frames_crop_centers (np.ndarray): array containing coordinates of a frame center (for cropping valid data)
         output_video_file_path (str): Path to the output processed video file.
-        video_capture (cv2.VideoCapture): Video capture object for reading frames.
         angles (np.ndarray): List of computed angles for each frame.
         borderBreakpoints (list): List of border breakpoints derived from the video.
         breakpoints (np.ndarray): Detected breakpoints in the video based on angles.
         segment_type (np.ndarray): Segment type array representing trends in angles.
-        frames (np.ndarray): List of frames captured from the video used when processing on RAM.
-        processed_frames (np.ndarray): List of processed frames to return from this class used when processing on RAM.
-        video_writer (cv2.VideoWriter): Video writer object for writing the processed video when RAM is not big enough.
+        rotation_sequences (list): List of rotation sequences derived from the video.
     """
     video_name: str
     frames_crop_centers: np.ndarray
     output_video_file_path: LiteralString | str | bytes
-    video_capture: cv2.VideoCapture
     angles: np.ndarray
     borderBreakpoints: list
     breakpoints: np.ndarray
     segment_type: np.ndarray
     rotation_sequences: list
-    frames: np.ndarray
-    processed_frames: np.ndarray
-    video_writer: cv2.VideoWriter
 
     def __init__(self, video_path, frames_crop_centers):
         """
@@ -100,7 +97,7 @@ class VideoPreprocessor:
         else:
             logging.info("Angles have to be estimated. Running estimation process ...")
             with timing("Estimate angles"):
-                self.angles = self.estimate_threads_orientation(step=1, angle_precision=1800, hough_treshold=200)
+                self.angles = self.parallel_threads_orientation_est(step=1, angle_precision=1800, hough_treshold=200)
                 self.dump_csv("full_angles", pd.DataFrame(self.angles, columns=["frame number", "angle (rad)"]))
 
         if (os.path.isfile(self._dump_path("breakpoints", extension="csv"))):
@@ -126,7 +123,37 @@ class VideoPreprocessor:
 
 
     @staticmethod
-    def frames_thread_orientation(params):
+    def sequential_thread_orientation_est(params):
+        """
+        Analyzes the orientation of frames in a video using edge detection and Hough Line Transform. Expects that
+        frame centers are already computed.
+
+        This method processes a specified range of video frames to detect and calculate the dominant
+        orientation of edges in each frame. The process involves adaptive cropping, resizing, Gaussian
+        blurring, edge detection using the Canny algorithm, and applying the Hough Line Transform to
+        extract line orientations. The resulting angles for each frame are returned as a list.
+
+        Parameters:
+            params (tuple): A tuple containing the following elements:
+                - video_path (str): Path to the video file.
+                - start_frame (int): The starting frame number for processing.
+                - end_frame (int): The ending frame number for processing.
+                - angle_precision (float): The precision for angle calculations in the Hough Transform.
+                - hough_threshold (int): The threshold for the Hough Transform to detect lines.
+                - apply_abs (bool): Whether to apply absolute value to the computed angle.
+                - frames_center (list[tuple[int, int, int]]): List of tuples, each containing a
+                  frame number and the center coordinates (cx, cy) for cropping.
+
+        Returns:
+            list[tuple[int, Union[float, None]]]: A list of tuples, where each tuple contains:
+                - frame_no (int): The frame number.
+                - angle_median (Union[float, None]): The dominant orientation angle in degrees
+                  for the frame or None if no lines were detected.
+
+        Raises:
+            AssertionError: If frame numbers from the frames_center input do not match the frame
+            numbers being processed.
+        """
         video_path, start_frame, end_frame, angle_precision, hough_threshold, apply_abs, frames_center = params
         angles = []
         cap = cv2.VideoCapture(video_path)  # it is necessary to instantiate video capture for each thread separately
@@ -170,21 +197,38 @@ class VideoPreprocessor:
             angles.append((frame_no, angle_median))
         return angles
 
-    def estimate_threads_orientation(self, start=0, end=None, step=PREPROCESSOR_SAMPLING, angle_precision=90, hough_treshold=80,
-                                     apply_abs=False):
+    def parallel_threads_orientation_est(self, start=0, end=None, step=PREPROCESSOR_SAMPLING, angle_precision=90, hough_treshold=80,
+                                         apply_abs=False):
         """
-        Estimates thread's orientation for the video frames between start and end with a given step,
-        using OpenCV Canny + HoughLinesP.
+        Computes the orientation of threads in parallel using multiprocessing.
+
+        This method divides the computation of thread orientation across multiple CPU cores by leveraging
+        multiprocessing. It segments the frames of the video into manageable chunks and processes
+        them concurrently to estimate the orientations efficiently. The computation uses a Hough Transform
+        based approach to analyze frames and identify angles with specified precision and thresholds.
+
+        Parameters:
+            start (int, optional): The starting frame index for computations. Defaults to 0.
+            end (int, optional): The ending frame index for computations. If None, the method
+                uses the total number of frames available in the video.
+            step (int, optional): The step size to use when iterating through frames.
+                Defaults to PREPROCESSOR_SAMPLING.
+            angle_precision (int, optional): The precision of angle estimations. Defaults to 90.
+            hough_treshold (int, optional): The threshold parameter for the Hough transform.
+                Defaults to 80.
+            apply_abs (bool, optional): Flag indicating whether to take the absolute value with respect
+                to computed orientations. Defaults to False.
 
         Returns:
-            np.ndarray: Estimated thread's orientation for each frame in degrees.
+            numpy.ndarray: An array of tuples (frame_index, angle), where each tuple contains the frame
+                number and the estimated angle corresponding to that frame.
         """
         if end is None:
             end = self.num_frames
 
         cpus = multiprocessing.cpu_count() - 1
         with multiprocessing.Pool(cpus) as pool:
-            results = list(tqdm(pool.imap(self.frames_thread_orientation,
+            results = list(tqdm(pool.imap(self.sequential_thread_orientation_est,
                                           [(self.video_path, frame_no, frame_no + (end - start) // cpus, angle_precision,
                                             hough_treshold // PREPROCESSOR_DOWNSCALE, apply_abs,
                                             self.frames_crop_centers[frame_no: frame_no + (end - start) // cpus])
@@ -207,16 +251,15 @@ class VideoPreprocessor:
         """
         MIN_FRAMES_PER_SEQUENCE = 200  # i.e. 16 seconds
 
-        derivative = self.angles[PREPROCESSOR_SAMPLING:, 1] - self.angles[:-PREPROCESSOR_SAMPLING, 1]  # increase significance of the angle change
-        threshold = threshold
+        angle_derivative = self.angles[PREPROCESSOR_SAMPLING:, 1] - self.angles[:-PREPROCESSOR_SAMPLING, 1]  # increase angle diff to distinguish noise and angle change
 
-        segment_type = np.zeros_like(derivative)
+        segment_type = np.zeros_like(angle_derivative)
         segment_type[:] = np.NaN
-        segment_type[derivative > threshold] = 1  # Increasing
-        segment_type[derivative < -threshold] = -1  # Decreasing
-        segment_type[np.abs(derivative) < threshold / 2] = 0
+        segment_type[angle_derivative > threshold] = 1  # Increasing
+        segment_type[angle_derivative < -threshold] = -1  # Decreasing
+        segment_type[np.abs(angle_derivative) < threshold / 2] = 0
 
-        # Estimate breakpoints and estabilish sequences
+        # Estimate breakpoints and establish sequences
         shift_sequences = []
         seq_zero_len = 0
         for frame_no, s in enumerate(segment_type):
@@ -231,11 +274,13 @@ class VideoPreprocessor:
                     shift_sequences.append((shift_start, frame_no))
                 seq_zero_len = 0
 
-        plt.plot(self.angles[:, 1], alpha=0.5)
-        for seq in shift_sequences:
-            plt.axvline(seq[0], color="red")
-            plt.axvline(seq[1], color="green")
-        plt.show()
+        if VERBOSE:
+            plt.figure(figsize=(15, 5))
+            plt.plot(self.angles[:, 1], alpha=0.5)
+            for seq in shift_sequences:
+                plt.axvline(seq[0], color="red")
+                plt.axvline(seq[1], color="green")
+            plt.show()
 
         clean_angles = np.copy(self.angles[:,1])
 
@@ -256,7 +301,6 @@ class VideoPreprocessor:
             extremas = find_peaks(data, distance=200, height=87)[0]
 
             beginning = 0
-            end_value = 180 * flips
             noisy_data = np.zeros((end - start, ))
             for e in extremas:
                 noisy_data[beginning: e] = 180 * flips + data[beginning: e]

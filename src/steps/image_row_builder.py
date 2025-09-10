@@ -4,11 +4,12 @@ import os
 import cv2
 import imageio.v3 as iio
 import numpy as np
-from scipy.optimize import curve_fit
+from scipy.optimize import brute
 from scipy.interpolate import interp1d
+from scipy.ndimage import median_filter
 from tqdm.auto import tqdm
 
-from config.config import (IMAGE_REPEATS, BLENDED_PIXELS_PER_FRAME, BLENDED_PIXELS_SHIFT, OUTPUT_FOLDER, TESTING_MODE, SINUSOID_SAMPLING)
+from config.config import (BLENDED_PIXELS_PER_FRAME, BLENDED_PIXELS_SHIFT, OUTPUT_FOLDER, TESTING_MODE, SINUSOID_SAMPLING)
 from steps.video_camera_motion import VideoMotion
 
 
@@ -32,7 +33,6 @@ class ImageRowBuilder:
         """
         logging.info(f"Processing RowBuilder for: {self.video_file_path}\n")
         rows = []
-        rows_compensated = []
         for iid, interval in enumerate(self.intervals):
             int_start, int_end = interval
             start = int_start + (int_end - int_start) // 2 - self.motions.get_frames_per360() // 2
@@ -41,31 +41,22 @@ class ImageRowBuilder:
                                      os.path.splitext(os.path.basename(self.video_file_path))[0] + f"-oio-{iid}.png")
             if not os.path.isfile(file_path):
                 row = self.construct_row(int(start), int(end), iid)
-                rows.append(row)
-                row_compensated = self.remove_column_shifts(row, self.motions.motion_positions[int(start): int(end), 2])
-                rows_compensated.append(row_compensated)
+                yshifts_compensated = ImageRowBuilder.compute_column_shifts_dic(row)
+                row_compensated = ImageRowBuilder.remove_column_shifts_dic(row, yshifts_compensated)
+
+                file_path = os.path.join(OUTPUT_FOLDER,
+                                         os.path.splitext(os.path.basename(self.video_file_path))[
+                                             0] + f"-oio-{iid}.png")
+                iio.imwrite(file_path, row_compensated.astype(np.uint8))
+                rows.append(row_compensated)
             else:
                 row = iio.imread(file_path)
                 rows.append(row)
 
-        rows_sin_compensated = self.remove_sin_transform(rows)
-
         if TESTING_MODE:
             for iid, row in enumerate(rows):
                 file_path = os.path.join(OUTPUT_FOLDER,
-                                         os.path.splitext(os.path.basename(self.video_file_path))[0] + f"-oio-{iid}.png")
-                iio.imwrite(file_path, row.astype(np.uint8))
-
-        if TESTING_MODE:
-            for iid, row in enumerate(rows_compensated):
-                file_path = os.path.join(OUTPUT_FOLDER,
-                                         os.path.splitext(os.path.basename(self.video_file_path))[0] + f"-oio-{iid}-compensated.png")
-                iio.imwrite(file_path, row.astype(np.uint8))
-
-        if TESTING_MODE:
-            for iid, row in enumerate(rows_sin_compensated):
-                file_path = os.path.join(OUTPUT_FOLDER,
-                                         os.path.splitext(os.path.basename(self.video_file_path))[0] + f"-oio-{iid}-sin.png")
+                                         os.path.splitext(os.path.basename(self.video_file_path))[0] + f"-oio-{iid}-raw.png")
                 iio.imwrite(file_path, row.astype(np.uint8))
 
         return rows
@@ -152,169 +143,103 @@ class ImageRowBuilder:
 
         return np.copy(row_image)
 
-    def remove_sin_transform(self, rows):
-        """
-        Wrapper function to remove sinusoidal distortions.
+    @staticmethod
+    def compute_column_shifts_dic(image):
+        # TODO: move constants somewhere
+        # Row image is blurred first (before column registration), blur along the vertical should be higher than horizontal
+        # This bluring possitively affects convergence in case of gradient method is used
+        # NOTE: Finally, brute method is used, maybe this is not necessary (but it eliminates noisiness of the signal as well)
+        BLUR_VERTICAL_KERNEL = 101
+        BLUR_HORIZONTAL_KERNEL = 51
+        BLUR_SIGMA = 121
+        # It is not clear what is a good smoothing factor. Large numbers have a problem with the beginning and the end of a signal
+        # Median filter is used for smoothing y-shifts computed for each column
+        MEDIAN_FILTER_SIZE = 1001
+        # Registered are only sparse columns of the image.
+        REGISTRATION_REFERENCE_FRAME_WIDTH = 1000
+        REGISTRATION_COLUMN_SPARSITY = 100
+        REGISTRATION_COLUMN_OFFSET = 10
+        # registration is done only on horizontal stripe of the image (to prevent work with the image boundary)
+        REGISTERED_CROP = [600, 1200]
 
-        Args:
-            rows (list[np.ndarray]): List of image rows.
+        # Computation of yshift for each column runs in three steps:
+        # 1) columns are registered with respect of registered columns to the left
+        # 2) because first REGISTRATION_REFERENCE_FRAME has no registered predecessors these columns are registered in
+        # second run backwards (so respected registered predecessors are to the right)
+        # 3) because the threded socket is circular the first and last column horizontal position must match.
+        # This is estimated in the third step.
+        #
+        # When raw y-shifts are computed, linear approximation is created and columns are shifted along this "thread
+        # axis". Smoothing is applied to reduce effect of outliers.
 
-        Returns:
-            list[np.ndarray]: Corrected image rows.
-        """
-        if rows:
-            movementses = []
-            for iid, interval in enumerate(self.intervals):
-                int_start, int_end = interval
-                start = int_start + (int_end - int_start) // 2 - self.motions.get_frames_per360() // 2
-                end = start + self.motions.get_frames_per360()
-                movementses.append(self.motions.motion_positions[int(start): int(end), 2] - (np.max(self.motions.motion_positions[int(start): int(end), 2]) + np.min(self.motions.motion_positions[int(start): int(end), 2])) / 2)
-            movementses = self.detrend_movements(movementses)
-            params = self.fitSin(movementses)
-            logging.debug(f"\nParameters for sinusoidal transformation:\n{params}\n")
-            rows = self.remove_sinusoidal_transformation(rows, params)
+        I = cv2.GaussianBlur(image, (BLUR_VERTICAL_KERNEL, BLUR_HORIZONTAL_KERNEL), BLUR_SIGMA)
+        yshifts = [0]
+        yshifts_cum = [0]
+        for column in tqdm(range(1, I.shape[1]), desc="Removing column shift (forward run)"):
+            def yshift(y):
+                sum = 0
+                for en, yshifts_len in enumerate(np.arange(REGISTRATION_COLUMN_OFFSET, REGISTRATION_REFERENCE_FRAME_WIDTH, REGISTRATION_COLUMN_SPARSITY)):
+                    if len(yshifts) > yshifts_len:
+                        relative_shift = int(yshifts_cum[-1] - yshifts_cum[-yshifts_len] + y[0])
+                        sampled = I[REGISTERED_CROP[0] + relative_shift: REGISTERED_CROP[1] + relative_shift, column]
+                        sum += np.sum(np.abs(np.diff(sampled) - np.diff(
+                            I[REGISTERED_CROP[0]: REGISTERED_CROP[1], column - yshifts_len])))
+                    else:
+                        break
+                return sum
 
-        return rows
+            dic = brute(yshift, ranges=[slice(-1, 2, 1)])
+            yshifts.append(dic[0])
+            yshifts_cum.append(yshifts_cum[-1] + dic[0])
 
-    def detrend_movements(self, movementses):
-        """
-        Removes linear trends from cumulative movements.
+        # Above code works well for columns 1000+. To fix the left part of the image we run the same code backwards for these columns
+        for column in tqdm(np.arange(REGISTRATION_REFERENCE_FRAME_WIDTH, -1, -1),
+                           desc="Removing column shift (backward run)"):
+            def yshift(y):
+                sum = 0
+                for en, yshifts_len in enumerate(
+                        np.arange(column + REGISTRATION_COLUMN_OFFSET, column + REGISTRATION_REFERENCE_FRAME_WIDTH, REGISTRATION_COLUMN_SPARSITY)):
+                    relative_shift = int(yshifts_cum[column + 1] - yshifts_cum[yshifts_len] + y[0])
+                    sampled = I[REGISTERED_CROP[0] + relative_shift: REGISTERED_CROP[1] + relative_shift, column]
+                    sum += np.sum(
+                        np.abs(np.diff(sampled) - np.diff(I[REGISTERED_CROP[0]: REGISTERED_CROP[1], yshifts_len])))
+                return sum
 
-        Args:
-            movementses (list[np.ndarray]): List of cumulative movements.
+            dic = brute(yshift, ranges=[slice(-1, 2, 1)])
+            yshifts[column] = -dic[0]
+            yshifts_cum[column] = yshifts_cum[column + 1] + dic[0]
 
-        Returns:
-            list[np.ndarray]: List of detrended cumulative movements.
-        """
-        detrended_movementses = []
-        for i, movements in enumerate(movementses):
-            x = np.arange(len(movements))
-            coefficients = np.polyfit(x, movements, deg=1)
-            linear_trend = np.polyval(coefficients[-2:], x)
-            detrended_movementses.append(movements - linear_trend)
+        # Cyclic overlap (end to start)
+        def yshift(y):
+            return np.sum(np.abs(
+                np.diff(I[int(REGISTERED_CROP[0] + y[0]): int(REGISTERED_CROP[1] + y[0]), :10], axis=0)
+                -np.diff(I[REGISTERED_CROP[0]: REGISTERED_CROP[1], -10:], axis=0)
+            ))
 
-        return detrended_movementses
+        cyclic_overlap = brute(yshift, ranges=[slice(-100, 101, 1)])[0]
 
-    def fitSin(self, movementses):
-        """
-        Fits a rotated sinusoidal model to cumulative movements.
+        total_shift = np.sum(yshifts) + cyclic_overlap
+        thread_slope = total_shift / (I.shape[1] + 1)
 
-        Args:
-            movementses (list[np.ndarray]): List of cumulative movements.
+        yshifts_smooth = median_filter(np.cumsum(yshifts), MEDIAN_FILTER_SIZE,
+                                       mode="nearest")
+        y_diffs = [x * thread_slope - yshifts_smooth[x] for x in range(I.shape[1])]
+        b = -(np.max(y_diffs) + np.min(y_diffs)) / 2
+        yshifts_compensated = yshifts_smooth - np.polyval([thread_slope, b], np.arange(I.shape[1]))
 
-        Returns:
-            np.ndarray: Fitted sinusoidal parameters.
-        """
-        paramses = []
-        for i, movements in enumerate(movementses):
-            x = np.arange(len(movements))
-            movements = np.asarray(movements)
-
-            # Remove NaN or inf values
-            mask = np.isfinite(movements)
-            if not np.any(mask):
-                raise ValueError(f"All movement values are NaN/inf for index {i}")
-            x = x[mask]
-            movements = movements[mask]
-
-            max_m = np.max(movements)
-            min_m = np.min(movements)
-            freq = 2 * np.pi / len(movements)
-
-            custom_rotated_sinusoid = lambda x, A, C, D, theta: self.rotated_sinusoid(x, A, freq, C, D, theta)
-            initial_guesses = [(max_m - min_m) / 2, 0, 0, 0]
-            lower_bounds = [0, -np.pi, -100, -0.1]
-            upper_bounds = [max(max_m, -min_m), np.pi, +100, 0.1]
-
-            try:
-                params, pcov = curve_fit(custom_rotated_sinusoid, x, movements, p0=initial_guesses,
-                                      bounds=(lower_bounds, upper_bounds), method='trf', maxfev=5000)
-            except RuntimeError as e:
-                logging.critical(f"Fit failed for index {i}: {e}")
-                continue  # or fill with default values if needed
-
-            A, C, D, theta = params
-            paramses.append((A, freq, C, D, theta))
-
-        return np.array(paramses)
-
-    def remove_sinusoidal_transformation(self, images, paramses):
-        """
-        Removes sinusoidal distortions from image rows.
-
-        Args:
-            images (list[np.ndarray]): List of image rows.
-            paramses (np.ndarray): Sinusoidal parameters for correction.
-
-        Returns:
-            list[np.ndarray]: Corrected image rows.
-        """
-        rows = []
-        # A, B, _, _, _ = np.median(paramses, axis=0)
-        for image, params in zip(images, paramses):
-            A, B, C, _, _ = params
-
-            # Create an empty output image
-            output_image = np.zeros_like(image)
-
-            # Track the maximum shift
-            max_shift = 0
-
-            # Loop over each column
-            for j in range(image.shape[1]):
-                # Calculate the vertical shift for this column based on the sinusoidal function
-                shift = self.sinusoid(j, A, B / SINUSOID_SAMPLING, C, 0)
-                max_shift = max(max_shift, abs(shift))  # Update maximum shift
-
-                # Shift the whole column
-                # Use np.roll to shift the column by the calculated value
-                new_column = np.roll(image[:, j], int(shift))
-
-                # Assign the shifted column back to the output image
-                output_image[:, j] = new_column
-
-            # Crop the image to remove the wrapped-around pixels
-            if max_shift > 0:
-                output_image = output_image[int(max_shift): -int(max_shift), :]
-
-            rows.append(output_image)
-
-        return rows
+        return yshifts_compensated
 
     @staticmethod
-    def sinusoid(x, A, B, C, D):
-        """
-        Defines a sinusoidal function.
+    def remove_column_shifts_dic(image, yshifts):
+        row = np.zeros_like(image)
+        crop = np.max(np.abs(-yshifts.astype(int)))
+        print(f"Cropping row image by {crop} pixels (height {row.shape[0]})")
 
-        Args:
-            x (np.ndarray | float): Input values.
-            A (float): Amplitude.
-            B (float): Frequency.
-            C (float): Phase shift.
-            D (float): Vertical shift.
-
-        Returns:
-            np.ndarray | float: Sinusoidal output.
-        """
-        return A * np.sin(B * x + C) + D
-
-    @staticmethod
-    def rotated_sinusoid(x, A, B, C, D, theta):
-        """
-        Rotates a sinusoidal function by a given angle.
-
-        Args:
-            x (np.ndarray | float): Input values.
-            A, B, C, D (float): Sinusoidal parameters.
-            theta (float): Rotation angle.
-
-        Returns:
-            np.ndarray | float: Rotated sinusoidal output.
-        """
-        y = A * np.sin(B * x + C) + D
-        x_rot = x * np.cos(theta) - y * np.sin(theta)
-        y_rot = x * np.sin(theta) + y * np.cos(theta)
-        return y_rot
+        for column in tqdm(np.arange(image.shape[1]), desc="Building row image"):
+            row[:, column] = np.roll(image[:, column], -yshifts[column].astype(int))
+        if crop == 0:
+            return row
+        return row[crop:-crop]
 
     def remove_column_shifts(self, image, shifts):
         """

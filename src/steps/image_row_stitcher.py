@@ -106,7 +106,7 @@ class ImageRowStitcher:
 
     def load_or_compute(self):
         """
-        Loads precomputed row positions if available, or computes them.
+        Loads precomputed row positions if available or computes them.
         Handles rolling and stitching of image rows.
         """
         if os.path.isfile(self._dump_path('positions')):
