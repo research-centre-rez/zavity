@@ -40,7 +40,7 @@ class ImageRowBuilder:
             file_path = os.path.join(OUTPUT_FOLDER,
                                      os.path.splitext(os.path.basename(self.video_file_path))[0] + f"-oio-{iid}.png")
             if not os.path.isfile(file_path):
-                row = self.construct_row(int(start), int(end), iid)
+                row, frame_map = self.construct_row(int(start), int(end), iid, return_frame_map=True)
                 yshifts_compensated = ImageRowBuilder.compute_column_shifts_dic(row)
                 row_compensated = ImageRowBuilder.remove_column_shifts_dic(row, yshifts_compensated)
 
@@ -48,6 +48,12 @@ class ImageRowBuilder:
                                          os.path.splitext(os.path.basename(self.video_file_path))[
                                              0] + f"-oio-{iid}.png")
                 iio.imwrite(file_path, row_compensated.astype(np.uint8))
+                file_path = os.path.join(OUTPUT_FOLDER,
+                                         os.path.splitext(os.path.basename(self.video_file_path))[
+                                             0] + f"-oio-{iid}-frame-map.csv")
+                with open(file_path, "w") as f:
+                    for frame_no in frame_map:
+                        f.write(f"{frame_no + int_start}\n")
                 rows.append(row_compensated)
             else:
                 row = iio.imread(file_path)
@@ -66,7 +72,8 @@ class ImageRowBuilder:
                       end: int,
                       row_id: int,
                       blended_pixels_per_frame=BLENDED_PIXELS_PER_FRAME,
-                      blended_pixels_shift=BLENDED_PIXELS_SHIFT):
+                      blended_pixels_shift=BLENDED_PIXELS_SHIFT,
+                      return_frame_map=False):
         """
         Constructs a single row image from video frames.
 
@@ -95,9 +102,8 @@ class ImageRowBuilder:
         n_frames = math.ceil(frames_per_360_deg + (blended_pixels_per_frame - 1) / shift_per_frame)
 
         frame_shift_to_pixels_total = math.ceil(n_frames * shift_per_frame) + (blended_pixels_per_frame - 1) * 2
-        row_image = np.zeros(
-            (frame_size[0],
-             frame_shift_to_pixels_total))
+        row_image = np.zeros((frame_size[0], frame_shift_to_pixels_total))
+        frame_map = np.zeros((frame_shift_to_pixels_total,))
 
         weight_matrix = np.zeros(row_image.shape)
 
@@ -126,6 +132,7 @@ class ImageRowBuilder:
             try:
                 row_image[:, crop_x_start:crop_x_end] += aligned_image[:, (image_part // 2 - blended_pixels_per_frame // 2) + blended_pixels_shift:
                                                             (image_part // 2 + 1 + blended_pixels_per_frame // 2) + blended_pixels_shift]
+                frame_map[crop_x_start:crop_x_end] = frameNo
             except:
                 raise Exception(f"Row builder failed on adding slice to row_image.\n"
                                 f"Row image shape{row_image.shape}\n"
@@ -141,7 +148,10 @@ class ImageRowBuilder:
         end_col = start_col + row_size
         row_image = (row_image / weight_matrix)[:, start_col:end_col]
 
-        return np.copy(row_image)
+        if return_frame_map:
+            return np.copy(row_image), frame_map
+        else:
+            return np.copy(row_image)
 
     @staticmethod
     def compute_column_shifts_dic(image):

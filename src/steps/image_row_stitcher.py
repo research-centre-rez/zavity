@@ -11,7 +11,7 @@ from scipy.optimize import minimize
 from skimage.metrics import structural_similarity as ssim
 from tqdm.auto import tqdm
 
-from config.config import SEARCH_SPACE_SIZE, TESTING_MODE, ROW_ROTATION_OVERLAP_RATIO, X_TOL, F_TOL, OUTPUT_FOLDER, N_CPUS
+from config.config import SEARCH_SPACE_SIZE, TESTING_MODE, X_TOL, F_TOL, OUTPUT_FOLDER
 from steps.video_camera_motion import VideoMotion
 
 

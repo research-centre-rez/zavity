@@ -211,7 +211,7 @@ centers_stable
 ```python
 from matplotlib.collections import LineCollection
 
-points = np.array([centers_stable[:, 0], centers_stable[:, 1]]).T.reshape(-1, 1, 2)
+points = np.array([centers[:, 0], centers[:, 1]]).T.reshape(-1, 1, 2)
 segments = np.concatenate([points[:-1], points[1:]], axis=1)
 norm = plt.Normalize(0, len(centers_stable) - 1)
 colors = plt.cm.viridis(norm(np.arange(len(segments))))
@@ -225,5 +225,99 @@ plt.show()
 ```
 
 ```python
+%load_ext autoreload
+%autoreload 2
+```
+
+```python
+from src.steps.adaptive_frame_cropping import AdaptiveFrameCropper
+```
+
+```python
+afc = AdaptiveFrameCropper("/Users/gimli/cvr/data/zavity/ETE 2025_07_01-sample/in/Hor_ZH2_down.MP4")
+```
+
+```python
+centers = afc.get_frames_center()
+```
+
+```python
+import pandas as pd
+import matplotlib.pyplot as plt
+```
+
+```python
+centers = pd.read_csv("/Users/gimli/cvr/data/zavity/ETE 2025_07_01-sample/out/Hor_ZH2_down-frameCenters.csv").to_numpy()
+angles = pd.read_csv("/Users/gimli/cvr/data/zavity/ETE 2025_07_01-sample/out/Hor_ZH2_down-full_angles.csv").to_numpy()
+```
+
+```python
+from matplotlib.collections import LineCollection
+
+points = np.array([centers[:, 1], centers[:, 2]]).T.reshape(-1, 1, 2)
+segments = np.concatenate([points[:-1], points[1:]], axis=1)
+norm = plt.Normalize(0, len(centers) - 1)
+colors = plt.cm.viridis(norm(np.arange(len(segments))))
+lc = LineCollection(segments, colors=colors, linewidth=2, alpha=0.8)
+lc.set_array(np.linspace(0, 1, len(centers)))
+fig, ax = plt.subplots()
+ax.add_collection(lc)
+ax.autoscale()
+ax.set_aspect("equal")
+plt.show()
+```
+
+```python
+centers_distance = np.sqrt(np.power(np.diff(centers[:, 1]),2) + np.power(np.diff(centers[:, 2]),2))
+```
+
+```python
+from scipy.signal import savgol_filter
+```
+
+```python
+plt.figure(figsize=(15,5))
+plt.plot(savgol_filter(angles[0:1000, 1], 5, 1))
+plt.show()
+```
+
+```python
+import cv2
+from steps.adaptive_frame_cropping import AdaptiveFrameCropper, CROPPED_FRAME_SIDE_PX
+```
+
+```python
+vidcap = cv2.VideoCapture("/Users/gimli/cvr/data/zavity/ETE 2025_07_01-sample/in/Hor_ZH2_down.MP4")
+writer = cv2.VideoWriter("/Users/gimli/cvr/data/zavity/ETE 2025_07_01-sample/out/stable-rot.mp4",
+    apiPreference=cv2.CAP_FFMPEG,
+    fourcc=cv2.VideoWriter_fourcc(*'mp4v'),
+    fps=vidcap.get(cv2.CAP_PROP_FPS),
+    frameSize=(CROPPED_FRAME_SIDE_PX, CROPPED_FRAME_SIDE_PX),
+    params=[
+        cv2.VIDEOWRITER_PROP_DEPTH,
+        cv2.CV_8U,
+        cv2.VIDEOWRITER_PROP_IS_COLOR,
+        0,
+    ])
+a = savgol_filter(angles[:, 1], 5, 1)
+frame_no = 0
+for i in range(1000):
+    success, frame = vidcap.read()
+    if not success:
+        break
+    cx, cy = centers[frame_no, 1:]
+    angle = a[frame_no]
+    rotation_matrix = cv2.getRotationMatrix2D((int(CROPPED_FRAME_SIDE_PX // 2), int(CROPPED_FRAME_SIDE_PX // 2)), angle, 1.0)
+    cropped_frame = cv2.warpAffine(AdaptiveFrameCropper.crop(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), cx, cy), rotation_matrix, (CROPPED_FRAME_SIDE_PX, CROPPED_FRAME_SIDE_PX))
+    #cropped_frame = AdaptiveFrameCropper.crop(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), cx, cy)
+    writer.write(cropped_frame)
+    frame_no += 1
+
+vidcap.release()
+writer.release()
+```
+
+```python
+
 
 ```
