@@ -1,5 +1,20 @@
 # OIO Pipeline
 
+## Last processing - ETE 2026/03
+
+The full pipeline was unstable by means of shift per frame computation and row shift estimation. Both were estimated manually and stitching was performed in th 18th notebook.  The beginning of the pipeline was rewritten and optimized (now the run is 15x faster).
+
+Pipeline now contains:
+- adaptive frame cropping (according to the center of lens)
+- angles computation and cleanup
+- breakpoint detection (split of the video into rotation and shift parts)
+- video split into sequences (rot and shift parts)
+
+Manual part is in the 18th notebook
+- row stitching
+- row y-compensation (necessary due to the tubus and socket axes mismatch)
+- row stitching
+
 ## Description
 Makes One Image Overview (OIO) from video scan of threaded insert. The whole video scan has to include axial movement only in one direction.
 

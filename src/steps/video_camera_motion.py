@@ -53,8 +53,8 @@ class VideoMotion:
         """
         self.speeds = {}
         self.stats = {}
-        self.motion_directions = []
-        self.motion_positions = []
+        self.motion_local_diff = []
+        self.features_motion = []
         self.intervals = np.array(intervals)
 
         video_capture = cv2.VideoCapture(video_file_path)
@@ -76,13 +76,11 @@ class VideoMotion:
             Any exceptions related to file operations, computations, or data processing.
         """
         logging.info(f"Processing VideoMotion for: {self.video_file_path}\n")
-        if os.path.isfile(self._dump_path("motion_directions")) and os.path.isfile(self._dump_path("motion_positions")):
-            self.motion_directions = np.load(self._dump_path("motion_directions"))
-            self.motion_positions = np.load(self._dump_path("motion_positions"))
+        if os.path.isfile(self._dump_path("motion_local_diff")):
+            self.motion_local_diff = np.load(self._dump_path("motion_local_diff"))
         else:
             self.parallel_motion_est()
-            self.dump("motion_directions", self.motion_directions)
-            self.dump("motion_positions", self.motion_positions)
+            self.dump("motion_local_diff", self.motion_local_diff)
         if os.path.isfile(self._dump_path("speeds")) and os.path.isfile(
                 self._dump_path("frames_per_360")) and os.path.isfile(self._dump_path("stats")):
             with open(self._dump_path("speeds"), 'rb') as fp:
@@ -97,6 +95,73 @@ class VideoMotion:
             logging.debug(f"Frames per 360: {self.frames_per_360} Loaded")
         else:
             self._compute()
+
+    @staticmethod
+    def dominant_shift_direction(points1, points2, min_magnitude=1.0):
+        """
+        Estimate dominant shift direction from matched point pairs.
+
+        Parameters
+        ----------
+        points1 : (N, 2) array
+            Original point coordinates.
+        points2 : (N, 2) array
+            Corresponding shifted point coordinates.
+        min_magnitude : float
+            Ignore vectors shorter than this, because their direction is unstable.
+
+        Returns
+        -------
+        direction : (2,) array
+            Unit vector of dominant direction [dx, dy].
+        angle_rad : float
+            Direction angle in radians.
+        angle_deg : float
+            Direction angle in degrees.
+        magnitudes : (M,) array
+            Magnitudes of valid displacement vectors.
+        vectors : (M, 2) array
+            Valid displacement vectors.
+        """
+        points1 = np.asarray(points1, dtype=float)
+        points2 = np.asarray(points2, dtype=float)
+
+        vectors = points2 - points1
+        magnitudes = np.linalg.norm(vectors, axis=1)
+
+        valid = magnitudes >= min_magnitude
+        vectors = vectors[valid]
+        magnitudes = magnitudes[valid]
+
+        if len(vectors) == 0:
+            raise ValueError("No valid displacement vectors after filtering.")
+
+        # normalize each displacement vector
+        unit_vectors = vectors / magnitudes[:, None]
+
+        # average normalized vectors
+        mean_vec = unit_vectors.mean(axis=0)
+        norm = np.linalg.norm(mean_vec)
+
+        if norm < 1e-12:
+            raise ValueError("Direction is ambiguous; vectors cancel each other.")
+
+        direction = mean_vec / norm
+        angle_rad = np.arctan2(direction[1], direction[0])
+        angle_deg = np.degrees(angle_rad)
+
+        return direction, angle_rad, angle_deg, magnitudes, vectors
+
+    @staticmethod
+    def projected_shift(vectors, direction):
+        direction = np.asarray(direction, dtype=float)
+        direction = direction / np.linalg.norm(direction)
+
+        projections = vectors @ direction
+        shift_median = np.median(projections)
+        shift_mean = np.mean(projections)
+
+        return projections, shift_median, shift_mean
 
     @staticmethod
     def sequential_motion_est(params):
@@ -134,29 +199,41 @@ class VideoMotion:
         success, prev_frame = vidcap.read()
         prev_frame = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY)
         corners = cv2.goodFeaturesToTrack(prev_frame, **feature_params)
+        corners_prev = np.copy(corners)
 
-        motion_positions = [(0, 0.0, 0.0)]
+        motion_diff = [(0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)]
 
         for frame_no in tqdm(np.arange(start + 1, end), total=end - start - 1, desc=f"Motion for frames {start}-{end}"):
             success, next_frame = vidcap.read()
             if not success:
                 break
             next_frame = cv2.cvtColor(next_frame, cv2.COLOR_BGR2GRAY)
-            new_corners, status, err = cv2.calcOpticalFlowPyrLK(prev_frame, next_frame, corners, None, **lk_params)
-            good_old = corners[status == 1]
-            good_new = new_corners[status == 1]
-            movement_direction = np.median(good_new - good_old, axis=0)
-            motion_positions.append((frame_no, motion_positions[-1][1] + movement_direction[0],
-                                     motion_positions[-1][2] + movement_direction[1]))
 
+            new_corners, status, err = cv2.calcOpticalFlowPyrLK(prev_frame, next_frame, corners_prev, None, **lk_params)
+            good_old = corners_prev.reshape(-1, 1, 2)[status == 1]
+            good_new = new_corners.reshape(-1, 1, 2)[status == 1]
+            total_err = err[status == 1].sum()
 
-            corners = new_corners[status == 1]
-            if len(corners < 150):
+            try:
+                direction, angle_rad, angle_deg, magnitudes, vectors = VideoMotion.dominant_shift_direction(good_old, good_new, 1)
+                projections, shift_median, shift_mean = VideoMotion.projected_shift(vectors, direction)
+            except ValueError:
+                direction = (0, 0)
+                angle_deg = 0
+                shift_median = 0
+                shift_mean = 0
+                logging.debug(f"No valid magnitude for {frame_no}")
+
+            motion_diff.append((frame_no, direction[0], direction[1], shift_median, shift_mean, angle_deg, total_err))
+
+            corners_prev = new_corners.reshape(-1, 1, 2)[status == 1]
+            if len(corners_prev) < 150 or frame_no == end - 1:
                 prev_frame = next_frame
                 corners = cv2.goodFeaturesToTrack(prev_frame, **feature_params)
+                corners_prev = np.copy(corners)
 
         vidcap.release()
-        return motion_positions
+        return np.array(motion_diff)
 
     def parallel_motion_est(self):
         """
@@ -185,22 +262,14 @@ class VideoMotion:
 
         # aggregate measured results
         stack = []
-        dx = dy = 0  # each sequence is necessary to shift according to the previous sequence
         for pos in results:
             pos_a = np.array(pos)
-            start, _, _ = pos[1]
-            end, x1, y1 = pos[-1]
-            if start == 0:  #first sequence contains (0, 0, 0) for the other sequences it is redundant
-                stack.append(np.stack([pos_a[:, 0], pos_a[:, 1], pos_a[:, 2]], axis=1))
+            if pos_a[0,0] == 0:  # the first sequence contains (0, 0, 0, 0, 0) for the other sequences it is redundant
+                stack.append(pos_a)
             else:
-                stack.append(np.stack([pos_a[1:, 0], pos_a[1:, 1] + dx, pos_a[1:, 2] + dy], axis=1))
-            dx += x1
-            dy += y1
-        self.motion_positions = np.concatenate(stack)
+                stack.append(pos_a[1:])
 
-        if VERBOSE:
-            self.plot_motion_trajectory()
-
+        self.motion_local_diff = np.concatenate(stack)
 
     def _compute(self):
         """
@@ -220,22 +289,53 @@ class VideoMotion:
             pickle.dump(self.stats, fp)
         self.dump("frames_per_360", self.frames_per_360)
 
+    @staticmethod
+    def estimate_direction_and_shift(motions):
+        """
+        motions: np.array of shape (N, 3)
+                 columns: [frameID, x_diff, y_diff]
+        """
+
+        # extract vectors
+        v = motions[:, 1:3]  # (N, 2)
+
+        # --- 1. estimate global direction ---
+        # robust: normalize each vector first (avoid bias by large steps)
+        norms = np.linalg.norm(v, axis=1, keepdims=True)
+        valid = norms.squeeze() > 1e-8
+
+        v_unit = np.zeros_like(v)
+        v_unit[valid] = v[valid] / norms[valid]
+
+        # mean direction
+        d = v_unit.mean(axis=0)
+
+        # normalize to unit vector
+        d_norm = np.linalg.norm(d)
+        if d_norm < 1e-8:
+            raise ValueError("Degenerate motion: no dominant direction")
+
+        d = d / d_norm
+
+        # --- 2. project motions onto global direction ---
+        projections = v @ d  # dot product
+
+        total_shift = projections.sum()
+
+        return d, total_shift, projections
+
     def compute_speeds(self):
         """
         Computes horizontal and vertical speeds from the detected motion.
         """
-        columns = ["frame_ID", "x_shift", "y_shift"]
-        df = pd.DataFrame(self.motion_positions, columns=columns)
-        df["x_shift_diff"] = df["x_shift"].diff()
-        df.loc[0, "x_shift_diff"] = df["x_shift"].iloc[0]
-        df["y_shift_diff"] = df["y_shift"].diff()
-        df.loc[0, "y_shift_diff"] = df["y_shift"].iloc[0]
+        columns = ["frame_ID", "x_shift", "y_shift", "x_shift_error", "y_shift_error"]
+        df = pd.DataFrame(self.motion_local_diff, columns=columns)
 
         mask_horizontal = pd.Series(False, index=df.index)
         for start, end in self.intervals:
             mask_horizontal |= (df['frame_ID'] >= start + 5) & (df['frame_ID'] <= end - 5)
         df_horizontal = df[mask_horizontal]
-        self.speeds["horizontal"] = df_horizontal["x_shift_diff"].mean() * MOTION_DOWNSCALE
+        self.speeds["horizontal"] = df_horizontal["x_shift_diff"].median() * MOTION_DOWNSCALE
         self.stats["horizontal_speed_std"] = df_horizontal["x_shift_diff"].std() * MOTION_DOWNSCALE
 
         vertical_shifts = []
@@ -331,32 +431,6 @@ class VideoMotion:
             obj: Object to save.
         """
         np.save(self._dump_path(name), obj)
-
-    def plot_motion_trajectory(self, start=0, end=4000):
-        """
-        Plots the cumulative horizontal and vertical motion over time
-        and saves the result to the specified path.
-        """
-        if not hasattr(self, "motion_positions") or len(self.motion_positions) == 0:
-            logging.warning("No motion data found. Run compute_motion() first.")
-            return
-
-        # Extract frame indices and displacements
-        frame_indices = [entry[0] for entry in self.motion_positions[:4000]]
-        horizontal_shifts = [entry[1] for entry in self.motion_positions[:4000]]
-        vertical_shifts = [entry[2] for entry in self.motion_positions[:4000]]
-
-        # Plot
-        from matplotlib import pyplot as plt
-        plt.figure(figsize=(10, 4))
-        plt.plot(frame_indices, horizontal_shifts, label="Horizontal Displacement", color="blue")
-        plt.plot(frame_indices, vertical_shifts, label="Vertical Displacement", color="red")
-        plt.xlabel("Frame Index")
-        plt.ylabel("Cumulative Displacement (pixels)")
-        plt.legend()
-        plt.tight_layout()
-        plt.savefig(os.path.join(OUTPUT_FOLDER, "motion.png"))
-        plt.close()
 
     def get_intervals(self):
         """

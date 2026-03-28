@@ -60,11 +60,12 @@ def process_multiple_videos(folder_path, calc_rot_per_frame):
     logging.info(f"Processing multiple videos in folder: {folder_path}. Output will be saved to {OUTPUT_FOLDER}.")
     # List all video files in the specified folder
     for filename in os.listdir(folder_path):
-        configure_logging(filename)
-        logging.info(f"Processing video: {filename}.")
-        video_path = os.path.join(folder_path, filename)
-        if os.path.isfile(video_path):
-            process_video(video_path, calc_rot_per_frame)
+        if filename.lower().endswith(".mp4"):
+            configure_logging(filename)
+            logging.info(f"Processing video: {filename}.")
+            video_path = os.path.join(folder_path, filename)
+            if os.path.isfile(video_path):
+                process_video(video_path, calc_rot_per_frame)
 
 
 def process_video(video_path, calc_rot_per_frame):
@@ -80,17 +81,20 @@ def process_video(video_path, calc_rot_per_frame):
             preprocessor.process_or_load()
             video_file_path = preprocessor.get_output_video_file_path()
 
-        with timing("VideoMotion"):
-            motions = VideoMotion(video_file_path, preprocessor.get_intervals())
-            motions.process()
+        # TODO: this part is not stable, there is notebook - 18-naive-oio instead where motion is manually estimated
+        # NOTE: Fixed motion and row shift produces better results than this automation
 
-        with timing("RowBuilder"):
-            constructor = ImageRowBuilder(motions, preprocessor.get_intervals(), video_file_path)
-            rows = constructor.construct_rows()
-
-        with timing("RowStitcher"):
-            stitcher = ImageRowStitcher(rows, motions, video_path)
-            stitcher.process()
+        # with timing("VideoMotion"):
+        #     motions = VideoMotion(video_file_path, preprocessor.get_intervals())
+        #     motions.process()
+        #
+        # with timing("RowBuilder"):
+        #     constructor = ImageRowBuilder(motions, preprocessor.get_intervals(), video_file_path)
+        #     rows = constructor.construct_rows()
+        #
+        # with timing("RowStitcher"):
+        #     stitcher = ImageRowStitcher(rows, motions, video_path)
+        #     stitcher.process()
 
     logging.info("OIO done")
 
@@ -110,6 +114,8 @@ if __name__ == "__main__":
 
     # Process based on mode
     if args.mode == "single":
+        if not os.path.isdir(OUTPUT_FOLDER):
+            os.makedirs(OUTPUT_FOLDER)
         if not args.video_name:
             raise ValueError("Please provide --path_to_video for single video processing mode.")
         process_single_video(args.video_name, args.calc_rot_per_frame)

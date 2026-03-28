@@ -1,6 +1,6 @@
 # Dynamic paths based on the project directory
-OUTPUT_FOLDER = "/Users/gimli/cvr/data/zavity/ETE 2025_07_01-sample/out"
-INPUT_FOLDER = "/Users/gimli/cvr/data/zavity/ETE 2025_07_01-sample/in"
+OUTPUT_FOLDER = "/Users/gimli/cvr/data/zavity/debug/GX011155"
+INPUT_FOLDER = "/Users/gimli/cvr/data/zavity/ETE 2026_03_16"
 
 # CONFIGURABLE
 VERBOSE = True  # plotting and image saving for debugging purposes

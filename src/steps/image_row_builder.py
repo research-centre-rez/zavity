@@ -43,10 +43,6 @@ class ImageRowBuilder:
                 row, frame_map = self.construct_row(int(start), int(end), iid, return_frame_map=True)
                 yshifts_compensated = ImageRowBuilder.compute_column_shifts_dic(row)
                 row_compensated = ImageRowBuilder.remove_column_shifts_dic(row, yshifts_compensated)
-
-                file_path = os.path.join(OUTPUT_FOLDER,
-                                         os.path.splitext(os.path.basename(self.video_file_path))[
-                                             0] + f"-oio-{iid}.png")
                 iio.imwrite(file_path, row_compensated.astype(np.uint8))
                 file_path = os.path.join(OUTPUT_FOLDER,
                                          os.path.splitext(os.path.basename(self.video_file_path))[
@@ -58,12 +54,6 @@ class ImageRowBuilder:
             else:
                 row = iio.imread(file_path)
                 rows.append(row)
-
-        if TESTING_MODE:
-            for iid, row in enumerate(rows):
-                file_path = os.path.join(OUTPUT_FOLDER,
-                                         os.path.splitext(os.path.basename(self.video_file_path))[0] + f"-oio-{iid}-raw.png")
-                iio.imwrite(file_path, row.astype(np.uint8))
 
         return rows
 
@@ -99,7 +89,7 @@ class ImageRowBuilder:
         image_part = self.height
 
         offset = max(0, math.ceil(start - (blended_pixels_per_frame // 2) / shift_per_frame))
-        n_frames = math.ceil(frames_per_360_deg + (blended_pixels_per_frame - 1) / shift_per_frame)
+        n_frames = math.ceil(frames_per_360_deg + 2 * (blended_pixels_per_frame - 1) / shift_per_frame)
 
         frame_shift_to_pixels_total = math.ceil(n_frames * shift_per_frame) + (blended_pixels_per_frame - 1) * 2
         row_image = np.zeros((frame_size[0], frame_shift_to_pixels_total))
@@ -144,12 +134,17 @@ class ImageRowBuilder:
 
         # Normalize and crop borders
         row_size = math.floor(frames_per_360_deg * shift_per_frame)
-        start_col = (row_image.shape[1] - row_size) // 2
-        end_col = start_col + row_size
+
+        valid_data = np.where(np.sum(weight_matrix, axis=0) != 0)[0]
+        start_valid_col = np.argmin(valid_data)
+        end_valid_col = np.argmax(valid_data)
+
+        start_col = np.max([(end_valid_col - row_size) // 2, start_valid_col])
+        end_col = np.min([start_col + row_size, end_valid_col])
         row_image = (row_image / weight_matrix)[:, start_col:end_col]
 
         if return_frame_map:
-            return np.copy(row_image), frame_map
+            return np.copy(row_image), frame_map[start_col:end_col]
         else:
             return np.copy(row_image)
 
@@ -182,7 +177,7 @@ class ImageRowBuilder:
         # When raw y-shifts are computed, linear approximation is created and columns are shifted along this "thread
         # axis". Smoothing is applied to reduce effect of outliers.
 
-        I = cv2.GaussianBlur(image, (BLUR_VERTICAL_KERNEL, BLUR_HORIZONTAL_KERNEL), BLUR_SIGMA)
+        I = cv2.GaussianBlur(np.nan_to_num(image, copy=True, nan=0).astype(np.uint8), (BLUR_VERTICAL_KERNEL, BLUR_HORIZONTAL_KERNEL), BLUR_SIGMA)
         yshifts = [0]
         yshifts_cum = [0]
         for column in tqdm(range(1, I.shape[1]), desc="Removing column shift (forward run)"):
@@ -221,18 +216,23 @@ class ImageRowBuilder:
 
         # Cyclic overlap (end to start)
         def yshift(y):
+            """This method was finetuned for many videos. It generates reasonable global minima for correct row shift"""
+            y_shift = int(y[0])
+            L = I[REGISTERED_CROP[0] + y_shift: REGISTERED_CROP[1] + y_shift, :40]
+            R = I[REGISTERED_CROP[0]: REGISTERED_CROP[1], -40:]
             return np.sum(np.abs(
-                np.diff(I[int(REGISTERED_CROP[0] + y[0]): int(REGISTERED_CROP[1] + y[0]), :10], axis=0)
-                -np.diff(I[REGISTERED_CROP[0]: REGISTERED_CROP[1], -10:], axis=0)
+                L / (R + 1) - 1
             ))
 
-        cyclic_overlap = brute(yshift, ranges=[slice(-100, 101, 1)])[0]
+        cyclic_overlap = brute(yshift, ranges=[slice(-200, 200, 1)])[0]
 
-        total_shift = np.sum(yshifts) + cyclic_overlap
-        thread_slope = total_shift / (I.shape[1] + 1)
+        logging.debug(f"Cyclic overlap: {cyclic_overlap}")
 
         yshifts_smooth = median_filter(np.cumsum(yshifts), MEDIAN_FILTER_SIZE,
                                        mode="nearest")
+        total_shift = cyclic_overlap - (yshifts_smooth[20] - yshifts_smooth[-20])
+        thread_slope = total_shift / (I.shape[1] + 1)
+
         y_diffs = [x * thread_slope - yshifts_smooth[x] for x in range(I.shape[1])]
         b = -(np.max(y_diffs) + np.min(y_diffs)) / 2
         yshifts_compensated = yshifts_smooth - np.polyval([thread_slope, b], np.arange(I.shape[1]))
@@ -251,7 +251,8 @@ class ImageRowBuilder:
             return row
         return row[crop:-crop]
 
-    def remove_column_shifts(self, image, shifts):
+    @staticmethod
+    def remove_column_shifts(image, shifts):
         """
         Removes vertical shifts from a row
 

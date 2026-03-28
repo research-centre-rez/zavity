@@ -12,6 +12,8 @@ import multiprocessing
 from config.config import (PREPROCESSOR_SAMPLING, OUTPUT_FOLDER, RECTIFICATION_PARAMS_FOLDER, RECTIFY,
                            PREPROCESSOR_DOWNSCALE, SEGMENT_TYPE_TH, REMOVE_ROTATION, CODEC, EXT, VERBOSE)
 from scripts.main import timing
+from signal_utils import find_step_edge_subsample, circular_signal_derivative, find_slope_change_broken_line, \
+    circular_signal
 from steps.adaptive_frame_cropping import AdaptiveFrameCropper, CROPPED_FRAME_SIDE_PX
 from steps.video_rectifier import _load_calibration_parameters
 import pandas as pd
@@ -42,6 +44,7 @@ class VideoPreprocessor:
     frames_crop_centers: np.ndarray
     output_video_file_path: LiteralString | str | bytes
     angles: np.ndarray
+    flips: np.ndarray
     borderBreakpoints: list
     breakpoints: np.ndarray
     segment_type: np.ndarray
@@ -57,6 +60,7 @@ class VideoPreprocessor:
         self.video_path = video_path
         self.frames_crop_centers = frames_crop_centers
         self.angles = None
+        self.flips = None
         self.clean_angles = None
         self.video_name = os.path.basename(self.video_path)
         self.output_video_file_path = self._dump_path('preprocessed', EXT)
@@ -121,6 +125,26 @@ class VideoPreprocessor:
 
         self.plot_angles()
 
+    @staticmethod
+    def circular_median_180(angles_deg):
+        angles_rad = np.deg2rad(angles_deg)
+
+        # double-angle mapping
+        angles2 = 2 * angles_rad
+
+        def angular_distance(a, b):
+            d = np.angle(np.exp(1j * (a - b)))
+            return np.abs(d)
+
+        # brute-force over candidates
+        costs = []
+        for a in angles2:
+            cost = np.sum(angular_distance(angles2, a))
+            costs.append(cost)
+
+        best = angles2[np.argmin(costs)]
+
+        return np.rad2deg(best / 2)
 
     @staticmethod
     def sequential_thread_orientation_est(params):
@@ -182,6 +206,7 @@ class VideoPreprocessor:
                                     maxLineGap=frame.shape[0] / 3)
             if lines is None:
                 angles.append((frame_no, None))
+                continue
 
             # Extract angles and compute dominant
             raw_angles = []
@@ -189,13 +214,17 @@ class VideoPreprocessor:
             for line in lines:
                 x1, y1, x2, y2 = line[0]
                 angle_rad = np.arctan2(y2 - y1, x2 - x1)
-                raw_angles.append(np.rad2deg(angle_rad))
+                raw_angles.append(np.rad2deg(angle_rad) )
 
-            angle_median = np.median(raw_angles)
+            # Classic median is extremely unstable for angles around 90 (-90)
+            angle_median = VideoPreprocessor.circular_median_180(raw_angles)
             if apply_abs:
                 angle_median = np.abs(angle_median)
             angles.append((frame_no, angle_median))
         return angles
+
+    def _nan_helper(self, y):
+        return np.isnan(y), lambda z: z.nonzero()[0]
 
     def parallel_threads_orientation_est(self, start=0, end=None, step=PREPROCESSOR_SAMPLING, angle_precision=90, hough_treshold=80,
                                          apply_abs=False):
@@ -237,41 +266,82 @@ class VideoPreprocessor:
                                 desc=f"Computing angles from {start} to {end} with step {step}")
                            )
 
-        computed_angles = np.array(sorted([(frame_no, angle) for records in results for frame_no, angle in records], key=lambda x: x[0]))
+        computed_angles = np.array(sorted([(int(frame_no), float(angle) if angle is not None else np.nan)
+                                           for records in results for frame_no, angle in records], key=lambda x: x[0]))
+        # interpolate missing values
+        nans, x = self._nan_helper(computed_angles[:,1])
+        computed_angles[nans, 1] = np.interp(x(nans), x(~nans), computed_angles[~nans, 1])
 
         logging.debug(f"Angles calculated from {start} to {end} with step {step}\n")
         return computed_angles
 
     def split_video_according_engine_movement_type(self, threshold=SEGMENT_TYPE_TH):
         """
-        Refines rotation angles for each frame to be smooth. Find-out frames where engine mode (shift vs. rotation) is changing.
+        Refines rotation angles for each frame to be smooth.
+        Find-out frames where engine mode (shift vs. rotation) is changing.
 
         return:
-            np.ndarray: Array of breakpoints.
+            np.ndarray, np.ndarray, nd.array:
+            - Array of rotation sequences,
+            - array of shift sequences,
+            - array of cleaned continous angles.
         """
         MIN_FRAMES_PER_SEQUENCE = 200  # i.e. 16 seconds
 
-        angle_derivative = self.angles[PREPROCESSOR_SAMPLING:, 1] - self.angles[:-PREPROCESSOR_SAMPLING, 1]  # increase angle diff to distinguish noise and angle change
+        # Find segments of increasing/decreasing angles.
+        # Because the change is noisy, we use PREPROCESSOR_SAMPLING to accumulate the change.
+        # However, PREPROCESSOR_SAMPLING affects the precision of the change detection,
+        # which has to be fine-tuned (see below).
+        angle_derivative = circular_signal_derivative(self.angles[:, 1], PREPROCESSOR_SAMPLING, 180)
 
-        segment_type = np.zeros_like(angle_derivative)
-        segment_type[:] = np.NaN
-        segment_type[angle_derivative > threshold] = 1  # Increasing
-        segment_type[angle_derivative < -threshold] = -1  # Decreasing
-        segment_type[np.abs(angle_derivative) < threshold / 2] = 0
+        segments_type = np.zeros_like(angle_derivative)
+        segments_type[:] = np.NaN
+        segments_type[angle_derivative > threshold] = 1  # Increasing
+        segments_type[angle_derivative < -threshold] = -1  # Decreasing
+        segments_type[np.abs(angle_derivative) < threshold / 2] = 0
 
         # Estimate breakpoints and establish sequences
-        shift_sequences = []
+        shift_sequences = []  # video intervals where the tubus with the mirror is not rotating
         seq_zero_len = 0
-        for frame_no, s in enumerate(segment_type):
-            if np.isnan(s):
+        for frame_no, segment_type in enumerate(segments_type):
+            if np.isnan(segment_type):  # segment type is not specified, change is present, but not enough
                 continue
-            if s == 0:
+            if segment_type == 0:  # the angle is not changing between two consecutive frames
                 if seq_zero_len == 0:
                     shift_start = frame_no
                 seq_zero_len += 1
             elif seq_zero_len != 0:
                 if seq_zero_len > MIN_FRAMES_PER_SEQUENCE: # more than 100 frames where rotation is not present
-                    shift_sequences.append((shift_start, frame_no))
+                    MAX_ERROR = 1.1
+                    correct_angles = False
+                    # NOTE: Here is necessary to compensate the sampling
+                    # - start of the rotation can be somewhere between two sampling points
+                    # - idea is to find change of slope in raw angle sequence around already found point
+                    start_lower_bound = np.max([0, shift_start - PREPROCESSOR_SAMPLING])
+                    start_upper_bound = np.min([len(self.angles), shift_start + PREPROCESSOR_SAMPLING])
+                    raw_signal = self.angles[start_lower_bound: start_upper_bound, 1]
+                    if np.mean(np.abs(raw_signal)) > MAX_ERROR * np.mean(raw_signal):
+                        motion_start = find_slope_change_broken_line(circular_signal(raw_signal))
+                        correct_angles = True
+                    else:
+                        motion_start = find_slope_change_broken_line(raw_signal)
+
+                    end_lower_bound = np.max([0, frame_no - PREPROCESSOR_SAMPLING])
+                    end_upper_bound = np.min([len(self.angles), frame_no + PREPROCESSOR_SAMPLING])
+                    raw_signal = self.angles[end_lower_bound: end_upper_bound, 1]
+
+                    if np.mean(np.abs(raw_signal)) > MAX_ERROR * np.mean(raw_signal):
+                        motion_end = find_slope_change_broken_line(circular_signal(raw_signal))
+                        correct_angles = True
+                    else:
+                        motion_end = find_slope_change_broken_line(raw_signal)
+
+                    motion_start_abs = np.round(motion_start["x0"]).astype(int) + start_lower_bound
+                    motion_end_abs = np.round(motion_end["x0"]).astype(int) + end_lower_bound
+                    logging.debug(f"Increasing precision of shift breakpoints: {shift_start} -> {motion_start_abs}, {frame_no} -> {motion_end_abs}")
+                    shift_sequences.append((motion_start_abs, motion_end_abs))
+                    if correct_angles:
+                        self.angles[motion_start_abs: motion_end_abs, 1] = circular_signal(self.angles[motion_start_abs: motion_end_abs, 1], shift=90)
                 seq_zero_len = 0
 
         if VERBOSE:
@@ -282,20 +352,38 @@ class VideoPreprocessor:
                 plt.axvline(seq[1], color="green")
             plt.show()
 
+        # TODO: move this cleanup into separate methods
         clean_angles = np.copy(self.angles[:,1])
+        # Rotation sequences have a similar length:
+        rot_sequences_length = np.median([n[0] - p[1]
+                                          for p, n in zip(shift_sequences[:-1], shift_sequences[1:])]).astype(int)
 
+        # Build the inverse => rotation sequences
         rotation_sequences = []
-        SEQENCE_SAFETY_PADDING = 0
-        start = 0
+        # NOTE:
+        # sequence safety padding is good for debug, but not so good for real usage,
+        # it generates new problems. The padded part should be video, where nothing is moving otherwise:
+        # - motion of frames jumps (no smooth changes)
+        # - rotation is missing (it is cliped)
+        # Finally, this was solved by better detection of shift/rotation in the angles sequence.
+        SEQENCE_SAFETY_PADDING = 0  # This should be dropped once the code is stable.
+        # Before the first and after the last shift sequences could be rotation sequence.
+        # Heuristic below adds a rotation sequence before and after shift sequences when there are enough frames present.
+        # If results are not good - crop the video or improve this section
+        start = shift_sequences[0][0] - rot_sequences_length
         for seq in shift_sequences:
+            if start < 0:
+                start = seq[1]
+                continue
             clean_angles[seq[0]: seq[1]] = np.median(self.angles[seq[0] + SEQENCE_SAFETY_PADDING: seq[1] - SEQENCE_SAFETY_PADDING, 1])
             assert start < seq[0] - SEQENCE_SAFETY_PADDING
             rotation_sequences.append((start + SEQENCE_SAFETY_PADDING, seq[0] - SEQENCE_SAFETY_PADDING))
             start = seq[1]
-        if np.nansum(np.abs(segment_type[start:])) > MIN_FRAMES_PER_SEQUENCE:
-            rotation_sequences.append((start, self.angles.shape[0] - SEQENCE_SAFETY_PADDING))
+        if np.nansum(np.abs(segments_type[start:])) > MIN_FRAMES_PER_SEQUENCE:
+            rotation_sequences.append((start + SEQENCE_SAFETY_PADDING, start + rot_sequences_length - SEQENCE_SAFETY_PADDING))
 
-        flips = 0
+        # Measured angles in rotation sequences contains discontinuities. This is handled here.
+        flips = 0  # points of HoughLines discontinuity (-90° = 90°)
         for start, end in rotation_sequences:
             data = self.angles[start:end, 1]
             extremas = find_peaks(data, distance=200, height=87)[0]
@@ -308,17 +396,30 @@ class VideoPreprocessor:
                 flips += 1
             noisy_data[beginning:] = 180 * flips + data[beginning:]
 
+            # Replace noisy signal with a polynomial fit
             data_x = np.arange(end - start)
             approximation = np.polyfit(data_x, noisy_data, 4)
-
-            # before rotation sequence, there will be the first value
             clean_angles[start: end] = np.polyval(approximation, np.arange(end - start))
+
             if flips % 2 == 1:
                 clean_angles[end:] += 180
 
         self.rotation_sequences = rotation_sequences
 
-        return rotation_sequences, shift_sequences, clean_angles
+        # The idea here is that measured angles form continuous (noisy) sequence. But HoughLines produces angles between
+        # -90, 90 (i.e. there is a discontinuity). Here we create the continuous sequence by adding k * 180° in every
+        # discontinuous point to stitch the signal.
+        ca_continuous = np.copy(clean_angles)
+        ca_continuous[:rotation_sequences[0][0]] = ca_continuous[rotation_sequences[0][0]]
+        for prev, next in zip(rotation_sequences[:-1], rotation_sequences[1:]):
+            diff = (clean_angles[prev[1] - 1] - clean_angles[next[0]])
+            diff_rounded = np.round(diff / 180)
+            if diff_rounded != 0:
+                ca_continuous[next[0]:] += diff_rounded * 180
+            ca_continuous[prev[1]:next[0]] = np.mean([ca_continuous[prev[1] - 1], ca_continuous[next[0]]])
+        ca_continuous[rotation_sequences[-1][1]:] = ca_continuous[rotation_sequences[-1][1] - 1]
+
+        return rotation_sequences, shift_sequences, ca_continuous
 
     def get_intervals(self):
         return self.rotation_sequences
@@ -452,8 +553,8 @@ class VideoPreprocessor:
                 plt.axvline(bt, color="blue" if bt == 1 else "orange")
         plt.title("Video split according to engine movement")
         plt.legend()
-        plt.show()
         plt.savefig(self._dump_path("angles", "png"))
+        plt.show()
         plt.close()
 
     def get_output_video_file_path(self):
