@@ -62,5 +62,14 @@ for ROOT, rotate in configurations:
 ```
 
 ```python
+TARGET = "/Volumes/FUEL_ZH_TEAM/ETE 2026_03_16/colormaps"
+for ROOT, rotate in configurations:
+    for file in os.listdir(ROOT):
+        if file.endswith("diverging-colormap.png"):
+            print(file)
+            shutil.copy(os.path.join(ROOT, file), os.path.join(TARGET, file))
+```
+
+```python
 
 ```
